@@ -26,7 +26,7 @@ export default function Main() {
   const screenshotFrameRef = useRef(null);
   const dataChannelsRef = useRef({}); // tabId -> DataChannel
   const peerConnectionsRef = useRef({}); // tabId -> RTCPeerConnection
-  
+
   // Setup WebRTC for a tab
   const setupWebRTCForTab = (tabId) => {
     if (peerConnectionsRef.current[tabId]) {
@@ -42,7 +42,7 @@ export default function Main() {
       pc.ondatachannel = (event) => {
         const dataChannel = event.channel;
         dataChannel.binaryType = 'arraybuffer';
-        
+
         dataChannel.onopen = () => {
           console.log(`WebRTC DataChannel opened for tab ${tabId}`);
           dataChannelsRef.current[tabId] = dataChannel;
@@ -51,24 +51,29 @@ export default function Main() {
         dataChannel.onmessage = (event) => {
           // Receive binary screenshot data
           if (event.data instanceof ArrayBuffer) {
-            const bytes = new Uint8Array(event.data);
-            const base64 = btoa(
-              Array.from(bytes).map(byte => String.fromCharCode(byte)).join('')
-            );
-            const dataUrl = `data:image/jpeg;base64,${base64}`;
-            
+            // Use Blob URL for better performance (avoids base64 conversion overhead)
+            // This is critical - the previous base64 conversion was blocking the main thread
+            const blob = new Blob([event.data], { type: 'image/jpeg' });
+            const dataUrl = URL.createObjectURL(blob);
+
             setActiveTab((currentActiveTab) => {
               if (tabId === currentActiveTab) {
+                // Clean up old blob URL to prevent memory leaks
+                if (latestScreenshotRef.current?.blobUrl) {
+                  URL.revokeObjectURL(latestScreenshotRef.current.blobUrl);
+                }
+
                 latestScreenshotRef.current = {
                   tabId,
                   image: dataUrl,
+                  blobUrl: dataUrl, // Store for cleanup
                   timestamp: Date.now()
                 };
-                
+
                 if (screenshotFrameRef.current) {
                   cancelAnimationFrame(screenshotFrameRef.current);
                 }
-                
+
                 screenshotFrameRef.current = requestAnimationFrame(() => {
                   if (latestScreenshotRef.current && latestScreenshotRef.current.tabId === tabId) {
                     setScreenshot(latestScreenshotRef.current.image);
@@ -76,6 +81,10 @@ export default function Main() {
                     screenshotFrameRef.current = null;
                   }
                 });
+              } else {
+                // If not active tab, revoking immediately would be wrong if we wanted to cache it, 
+                // but for now we just drop it to save memory.
+                URL.revokeObjectURL(dataUrl);
               }
               return currentActiveTab;
             });
@@ -211,7 +220,7 @@ export default function Main() {
           setupWebRTCForTab(tabId);
           pc = peerConnectionsRef.current[tabId];
         }
-        
+
         if (pc && offer) {
           await pc.setRemoteDescription(new RTCSessionDescription(offer));
           const answer = await pc.createAnswer();
@@ -247,19 +256,19 @@ export default function Main() {
             new Uint8Array(image).reduce((data, byte) => data + String.fromCharCode(byte), '')
           );
           const dataUrl = `data:image/jpeg;base64,${base64}`;
-          
+
           // UDP-like behavior: only keep the latest frame
           latestScreenshotRef.current = {
             tabId,
             image: dataUrl,
             timestamp: Date.now()
           };
-          
+
           // Cancel any pending frame update
           if (screenshotFrameRef.current) {
             cancelAnimationFrame(screenshotFrameRef.current);
           }
-          
+
           // Schedule update for next frame (only latest will be rendered)
           screenshotFrameRef.current = requestAnimationFrame(() => {
             if (latestScreenshotRef.current && latestScreenshotRef.current.tabId === tabId) {
@@ -284,12 +293,12 @@ export default function Main() {
             image: `data:image/jpeg;base64,${image}`,
             timestamp: Date.now()
           };
-          
+
           // Cancel any pending frame update
           if (screenshotFrameRef.current) {
             cancelAnimationFrame(screenshotFrameRef.current);
           }
-          
+
           // Schedule update for next frame (only latest will be rendered)
           screenshotFrameRef.current = requestAnimationFrame(() => {
             if (latestScreenshotRef.current && latestScreenshotRef.current.tabId === tabId) {
@@ -311,7 +320,7 @@ export default function Main() {
         return currentActiveTab;
       });
       // Update tabs list
-      setTabs(prev => prev.map(tab => 
+      setTabs(prev => prev.map(tab =>
         tab.tabId === tabId ? { ...tab, url } : tab
       ));
     });
@@ -322,6 +331,10 @@ export default function Main() {
       // Cleanup animation frame
       if (screenshotFrameRef.current) {
         cancelAnimationFrame(screenshotFrameRef.current);
+      }
+      // Cleanup blob URLs
+      if (latestScreenshotRef.current?.blobUrl) {
+        URL.revokeObjectURL(latestScreenshotRef.current.blobUrl);
       }
       // Cleanup all WebRTC connections
       Object.keys(peerConnectionsRef.current).forEach(tabId => {
@@ -348,7 +361,7 @@ export default function Main() {
   // Listen for offset updates from offset-config app
   useEffect(() => {
     const STORAGE_KEY = 'browser_offset_config';
-    
+
     // Listen for postMessage from offset-config app
     const handleMessage = (event) => {
       if (event.data && event.data.type === 'OFFSET_UPDATE') {
@@ -356,7 +369,7 @@ export default function Main() {
         setOffsetY(event.data.y || 0);
       }
     };
-    
+
     // Listen for storage changes (when offset-config saves)
     const handleStorageChange = (e) => {
       if (e.key === STORAGE_KEY && e.newValue) {
@@ -369,10 +382,10 @@ export default function Main() {
         }
       }
     };
-    
+
     window.addEventListener('message', handleMessage);
     window.addEventListener('storage', handleStorageChange);
-    
+
     // Also poll localStorage periodically as a fallback
     const interval = setInterval(() => {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -388,7 +401,7 @@ export default function Main() {
         }
       }
     }, 500);
-    
+
     return () => {
       window.removeEventListener('message', handleMessage);
       window.removeEventListener('storage', handleStorageChange);
@@ -403,15 +416,19 @@ export default function Main() {
       cancelAnimationFrame(screenshotFrameRef.current);
       screenshotFrameRef.current = null;
     }
-    
+
     // Only clear screenshot if switching to a different tab (not just updating)
     // Don't clear if we're just updating tabs list
     const prevTab = latestScreenshotRef.current?.tabId;
     if (prevTab && prevTab !== activeTab) {
+      // Clean up old blob URL when switching tabs
+      if (latestScreenshotRef.current?.blobUrl) {
+        URL.revokeObjectURL(latestScreenshotRef.current.blobUrl);
+      }
       latestScreenshotRef.current = null;
       // Keep screenshot visible until new one arrives (don't clear immediately)
     }
-    
+
     if (activeTab) {
       const tab = tabs.find(t => t.tabId === activeTab);
       if (tab) setCurrentUrl(tab.url);
@@ -425,9 +442,9 @@ export default function Main() {
   // Normalize URL - add protocol if missing, or convert to Google search
   const normalizeUrl = (input) => {
     if (!input || !input.trim()) return input;
-    
+
     const trimmed = input.trim();
-    
+
     // Check if it's already a valid URL with protocol
     try {
       const url = new URL(trimmed);
@@ -435,22 +452,22 @@ export default function Main() {
     } catch (e) {
       // Not a valid URL with protocol
     }
-    
+
     // Check if it looks like a domain (contains dots or localhost, and no spaces)
     const hasNoSpaces = !trimmed.includes(' ');
     const hasDot = trimmed.includes('.');
     const isLocalhost = trimmed.toLowerCase().startsWith('localhost');
     const hasColonPort = /:\d+/.test(trimmed); // e.g., localhost:3000
-    
+
     // Simple check: if it has a dot or is localhost, and no spaces, treat as URL
     if ((hasDot || isLocalhost) && hasNoSpaces) {
       // It's likely a domain, add https://
       let normalized = trimmed;
-      
+
       // Don't add www. for localhost or IP addresses
       const isIP = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(trimmed);
       const isLocal = isLocalhost || normalized.startsWith('127.') || normalized.startsWith('192.') || normalized.startsWith('10.');
-      
+
       if (!isLocal && !normalized.startsWith('www.') && !normalized.includes('://')) {
         // Check if it's a common TLD that typically uses www
         const commonTlds = ['.com', '.org', '.net', '.edu', '.gov', '.io', '.co', '.dev', '.app'];
@@ -459,12 +476,12 @@ export default function Main() {
           normalized = 'www.' + normalized;
         }
       }
-      
+
       // Use http:// for localhost, https:// for others
       const protocol = (isLocalhost || isIP || isLocal) ? 'http://' : 'https://';
       return `${protocol}${normalized}`;
     }
-    
+
     // If it contains spaces or doesn't look like a URL, treat as Google search
     return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
   };
@@ -492,7 +509,7 @@ export default function Main() {
 
   const handleViewportClick = (e) => {
     if (!activeTab || !viewportRef.current || !socketRef.current) return;
-    
+
     const rect = viewportRef.current.getBoundingClientRect();
     const scale = scaleRef.current;
     // Account for the scaled and centered viewport
@@ -501,19 +518,19 @@ export default function Main() {
     const viewportHeight = 1080;
     const scaledWidth = viewportWidth * scale;
     const scaledHeight = viewportHeight * scale;
-    
+
     // Calculate position relative to the viewport's top-left corner (before scaling)
     let x = (e.clientX - rect.left - (rect.width - scaledWidth) / 2) / scale;
     let y = (e.clientY - rect.top - (rect.height - scaledHeight) / 2) / scale;
-    
+
     // Apply offsets
     x += offsetX;
     y += offsetY;
-    
+
     // Clamp to viewport bounds
     const clampedX = Math.max(0, Math.min(viewportWidth, Math.round(x)));
     const clampedY = Math.max(0, Math.min(viewportHeight, Math.round(y)));
-    
+
     socketRef.current.emit("mouse_click", {
       tabId: activeTab,
       x: clampedX,
@@ -524,7 +541,7 @@ export default function Main() {
 
   const handleViewportMouseMove = (e) => {
     if (!activeTab || !viewportRef.current || !socketRef.current) return;
-    
+
     const rect = viewportRef.current.getBoundingClientRect();
     const scale = scaleRef.current;
     // Account for the scaled and centered viewport
@@ -532,19 +549,19 @@ export default function Main() {
     const viewportHeight = 1080;
     const scaledWidth = viewportWidth * scale;
     const scaledHeight = viewportHeight * scale;
-    
+
     // Calculate position relative to the viewport's top-left corner (before scaling)
     let x = (e.clientX - rect.left - (rect.width - scaledWidth) / 2) / scale;
     let y = (e.clientY - rect.top - (rect.height - scaledHeight) / 2) / scale;
-    
+
     // Apply offsets
     x += offsetX;
     y += offsetY;
-    
+
     // Clamp to viewport bounds
     const clampedX = Math.max(0, Math.min(viewportWidth, Math.round(x)));
     const clampedY = Math.max(0, Math.min(viewportHeight, Math.round(y)));
-    
+
     socketRef.current.emit("mouse_move", {
       tabId: activeTab,
       x: clampedX,
@@ -555,7 +572,7 @@ export default function Main() {
   const handleViewportWheel = (e) => {
     if (!activeTab || !socketRef.current) return;
     e.preventDefault();
-    
+
     socketRef.current.emit("scroll", {
       tabId: activeTab,
       deltaX: e.deltaX,
@@ -565,7 +582,7 @@ export default function Main() {
 
   const handleKeyDown = (e) => {
     if (!activeTab || !socketRef.current) return;
-    
+
     // Handle special keys
     const specialKeys = {
       // Navigation
@@ -575,19 +592,19 @@ export default function Main() {
       "Backspace": "Backspace",
       "Delete": "Delete",
       "Insert": "Insert",
-      
+
       // Arrow keys
       "ArrowUp": "ArrowUp",
       "ArrowDown": "ArrowDown",
       "ArrowLeft": "ArrowLeft",
       "ArrowRight": "ArrowRight",
-      
+
       // Modifier keys
       "Control": "Control",
       "Meta": "Meta", // Command on Mac
       "Alt": "Alt",
       "Shift": "Shift",
-      
+
       // Function keys
       "F1": "F1",
       "F2": "F2",
@@ -601,13 +618,13 @@ export default function Main() {
       "F10": "F10",
       "F11": "F11",
       "F12": "F12",
-      
+
       // Navigation keys
       "Home": "Home",
       "End": "End",
       "PageUp": "PageUp",
       "PageDown": "PageDown",
-      
+
       // Other special keys
       "CapsLock": "CapsLock",
       "NumLock": "NumLock",
@@ -615,7 +632,7 @@ export default function Main() {
       "Pause": "Pause",
       "PrintScreen": "PrintScreen",
       "ContextMenu": "ContextMenu", // Right-click menu key
-      
+
       // Media keys (if supported)
       "AudioVolumeUp": "AudioVolumeUp",
       "AudioVolumeDown": "AudioVolumeDown",
@@ -633,15 +650,15 @@ export default function Main() {
       if (e.metaKey) modifiers.push("Meta");
       if (e.altKey) modifiers.push("Alt");
       if (e.shiftKey) modifiers.push("Shift");
-      
+
       // Get the actual key (without modifiers)
       const key = e.key;
-      
+
       // Handle special key combinations
       if (specialKeys[key]) {
         e.preventDefault();
         // Send combination like "Control+c" or "Meta+v"
-        const combination = modifiers.length > 0 
+        const combination = modifiers.length > 0
           ? `${modifiers.join("+")}+${specialKeys[key]}`
           : specialKeys[key];
         socketRef.current.emit("keyboard_input", {
@@ -723,14 +740,14 @@ export default function Main() {
 
   const handleImportCookies = () => {
     if (!cookieJson.trim() || !socketRef.current) return;
-    
+
     try {
       const cookies = JSON.parse(cookieJson);
       if (!Array.isArray(cookies)) {
         setCookieStatus({ type: "error", message: "Cookies must be an array" });
         return;
       }
-      
+
       setCookieStatus({ type: null, message: "" });
       socketRef.current.emit("set_cookies", { cookies });
     } catch (error) {
@@ -817,11 +834,10 @@ export default function Main() {
                   onClick={() => {
                     switchTab(tab.tabId);
                   }}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-t-lg min-w-[200px] max-w-[400px] truncate cursor-pointer ${
-                    activeTab === tab.tabId
-                      ? "bg-gray-900 border-t border-x border-gray-700"
-                      : "bg-gray-700 hover:bg-gray-600"
-                  }`}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-t-lg min-w-[200px] max-w-[400px] truncate cursor-pointer ${activeTab === tab.tabId
+                    ? "bg-gray-900 border-t border-x border-gray-700"
+                    : "bg-gray-700 hover:bg-gray-600"
+                    }`}
                 >
                   <span className="text-xs truncate flex-1">{tab.url}</span>
                   <button
@@ -929,7 +945,7 @@ export default function Main() {
         >
           🍪
         </button>
-        
+
         {/* Offset Toggle Button */}
         <button
           onClick={() => setShowOffsetControls(!showOffsetControls)}
@@ -1027,7 +1043,7 @@ export default function Main() {
               <p className="text-sm text-gray-400 mb-4">
                 Paste your cookies JSON array here. Cookies will be applied to all tabs in this browser instance.
               </p>
-              
+
               <textarea
                 value={cookieJson}
                 onChange={(e) => {
@@ -1040,11 +1056,10 @@ export default function Main() {
 
               {cookieStatus.type && (
                 <div
-                  className={`mt-4 p-3 rounded-lg text-sm ${
-                    cookieStatus.type === "success"
-                      ? "bg-green-900/30 border border-green-700 text-green-400"
-                      : "bg-red-900/30 border border-red-700 text-red-400"
-                  }`}
+                  className={`mt-4 p-3 rounded-lg text-sm ${cookieStatus.type === "success"
+                    ? "bg-green-900/30 border border-green-700 text-green-400"
+                    : "bg-red-900/30 border border-red-700 text-red-400"
+                    }`}
                 >
                   {cookieStatus.message}
                 </div>

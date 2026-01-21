@@ -12,12 +12,12 @@ const server = http.createServer(app);
 
 // Get port and allowed origins from environment variables
 const PORT = process.env.PORT || 3000;
-const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS 
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
   : ["*"];
 
 const io = new Server(server, {
-  cors: { 
+  cors: {
     origin: ALLOWED_ORIGINS.includes("*") ? "*" : ALLOWED_ORIGINS,
     credentials: true
   }
@@ -69,8 +69,8 @@ async function initBrowser(browserId) {
 
   const playwright = await import("playwright");
   const chromium = playwright.chromium;
-  
-  const browser = await chromium.launch({ 
+
+  const browser = await chromium.launch({
     headless: true,
     args: [
       '--disable-gpu',
@@ -81,7 +81,7 @@ async function initBrowser(browserId) {
       '--disable-setuid-sandbox'
     ]
   });
-  
+
   const context = await browser.newContext({
     viewport: { width: 1920, height: 1080 },
     ignoreHTTPSErrors: true
@@ -91,10 +91,10 @@ async function initBrowser(browserId) {
   if (!browserInstances[browserId]) {
     browserInstances[browserId] = createBrowserInstance();
   }
-  
+
   browserInstances[browserId].browser = browser;
   browserInstances[browserId].context = context;
-  
+
   return browserInstances[browserId];
 }
 
@@ -128,7 +128,7 @@ async function setupWebRTC(socket, tabId, browserInstance) {
       });
 
       dataChannel.binaryType = 'arraybuffer';
-      
+
       dataChannel.onopen = () => {
         console.log(`WebRTC DataChannel opened for tab ${tabId}, socket ${socket.id}`);
       };
@@ -199,7 +199,7 @@ async function startCDPScreencast(socket, tabId, browserInstance) {
     browserInstance.tabViewers[tabId] = new Set();
   }
   browserInstance.tabViewers[tabId].add(socket.id);
-  
+
   // Setup WebRTC for this client/tab
   await setupWebRTC(socket, tabId, browserInstance);
 
@@ -224,12 +224,12 @@ async function startCDPScreencast(socket, tabId, browserInstance) {
 
         try {
           const { data, sessionId } = event;
-          
+
           // Broadcast frame to ALL clients viewing this tab
           // Convert base64 to Buffer for efficient binary transfer
           const imageBuffer = Buffer.from(data, 'base64');
           const viewers = browserInstance.tabViewers[tabId] || new Set();
-          
+
           viewers.forEach(socketId => {
             // Try WebRTC DataChannel first (most efficient)
             const dataChannel = browserInstance.webrtcDataChannels[socketId]?.[tabId];
@@ -287,10 +287,10 @@ async function startCDPScreencast(socket, tabId, browserInstance) {
     // Start screencast with optimized settings
     await cdpSession.send('Page.startScreencast', {
       format: 'jpeg',
-      quality: 85,
+      quality: 80, // Slightly reduced from 85 for bandwidth savings
       maxWidth: 1920,
       maxHeight: 1080,
-      everyNthFrame: 1 // Send every frame for smooth experience
+      everyNthFrame: 1 // Send every frame for smooth experience (WebRTC handles flow control)
     });
 
     browserInstance.screencastActive[tabId] = true;
@@ -431,7 +431,7 @@ io.on("connection", async (socket) => {
 
     const page = browserInstance.pages[tabId];
     if (!page || page.isClosed()) return;
-    
+
     // Remove from previous tab viewers (if any)
     Object.keys(browserInstance.tabViewers).forEach(tId => {
       if (browserInstance.tabViewers[tId]) {
@@ -441,12 +441,12 @@ io.on("connection", async (socket) => {
         }
       }
     });
-    
+
     await page.bringToFront();
-    
+
     // Start CDP screencast for the new tab (adds socket to viewers)
     await startCDPScreencast(socket, tabId, browserInstance);
-    
+
     // Send immediate screenshot to this client
     setTimeout(async () => {
       try {
@@ -467,7 +467,7 @@ io.on("connection", async (socket) => {
         // Screenshot might fail, that's okay
       }
     }, 50);
-    
+
     socket.emit("tab_switched", { tabId });
   });
 
@@ -480,7 +480,7 @@ io.on("connection", async (socket) => {
 
     const page = browserInstance.pages[tabId];
     if (!page) return;
-    
+
     // Remove this socket from viewers
     if (browserInstance.tabViewers[tabId]) {
       browserInstance.tabViewers[tabId].delete(socket.id);
@@ -498,18 +498,18 @@ io.on("connection", async (socket) => {
         }
       }
     }
-    
+
     // Cleanup WebRTC for this tab
     cleanupWebRTC(socket.id, tabId, browserInstance);
-    
+
     await page.close();
     delete browserInstance.pages[tabId];
     delete browserInstance.screencastActive[tabId];
-    
+
     if (browserInstance.activeTabs.includes(tabId)) {
       browserInstance.activeTabs = browserInstance.activeTabs.filter(id => id !== tabId);
     }
-    
+
     // Broadcast to all clients that this tab was closed
     io.emit("tab_closed", { tabId });
   });
@@ -521,7 +521,7 @@ io.on("connection", async (socket) => {
 
     const page = browserInstance.pages[tabId];
     if (!page || page.isClosed()) return;
-    
+
     try {
       await page.mouse.click(x, y, { button });
     } catch (error) {
@@ -536,7 +536,7 @@ io.on("connection", async (socket) => {
 
     const page = browserInstance.pages[tabId];
     if (!page || page.isClosed()) return;
-    
+
     try {
       await page.mouse.move(x, y);
     } catch (error) {
@@ -551,7 +551,7 @@ io.on("connection", async (socket) => {
 
     const page = browserInstance.pages[tabId];
     if (!page || page.isClosed()) return;
-    
+
     try {
       if (key) {
         // Check if it's a key combination (e.g., "Control+c", "Meta+v")
@@ -559,15 +559,15 @@ io.on("connection", async (socket) => {
           const parts = key.split("+");
           const modifiers = parts.slice(0, -1); // All except last
           const mainKey = parts[parts.length - 1]; // Last part is the actual key
-          
+
           // Press modifiers
           for (const modifier of modifiers) {
             await page.keyboard.down(modifier);
           }
-          
+
           // Press the main key
           await page.keyboard.press(mainKey);
-          
+
           // Release modifiers
           for (const modifier of modifiers.reverse()) {
             await page.keyboard.up(modifier);
@@ -591,7 +591,7 @@ io.on("connection", async (socket) => {
 
     const page = browserInstance.pages[tabId];
     if (!page || page.isClosed()) return;
-    
+
     try {
       await page.mouse.wheel(deltaX || 0, deltaY || 0);
     } catch (error) {
@@ -606,7 +606,7 @@ io.on("connection", async (socket) => {
 
     const page = browserInstance.pages[tabId];
     if (!page || page.isClosed()) return;
-    
+
     try {
       await page.goto(url);
     } catch (error) {
@@ -713,11 +713,11 @@ io.on("connection", async (socket) => {
           if (browserInstance.tabViewers[tabId].size === 0) {
             delete browserInstance.tabViewers[tabId];
             // Stop screencast if no one is viewing
-            stopCDPScreencast(tabId, browserInstance).catch(() => {});
+            stopCDPScreencast(tabId, browserInstance).catch(() => { });
           }
         }
       });
-      
+
       // Cleanup all WebRTC connections for this socket
       if (browserInstance.webrtcConnections[socket.id]) {
         Object.keys(browserInstance.webrtcConnections[socket.id]).forEach(tabId => {
@@ -729,10 +729,10 @@ io.on("connection", async (socket) => {
         delete browserInstance.webrtcDataChannels[socket.id];
       }
     }
-    
+
     // Remove socket from browser map
     delete socketBrowserMap[socket.id];
-    
+
     console.log("Client disconnected", socket.id);
   });
 });
