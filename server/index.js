@@ -76,15 +76,55 @@ async function initBrowser(browserId) {
       '--disable-gpu',
       '--disable-dev-shm-usage',
       '--disable-software-rasterizer',
-      '--disable-extensions',
       '--no-sandbox',
-      '--disable-setuid-sandbox'
+      '--disable-setuid-sandbox',
+      // Make browser less detectable
+      '--disable-blink-features=AutomationControlled',
+      '--disable-features=IsolateOrigins,site-per-process',
+      '--disable-web-security',
+      '--disable-features=VizDisplayCompositor'
     ]
   });
 
   const context = await browser.newContext({
     viewport: { width: 1920, height: 1080 },
-    ignoreHTTPSErrors: true
+    ignoreHTTPSErrors: true,
+    // Use a realistic user agent to avoid bot detection
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    // Set locale and timezone
+    locale: 'en-US',
+    timezoneId: 'America/New_York',
+    // Add permissions
+    permissions: ['geolocation'],
+    // Set geolocation (optional, helps with some sites)
+    geolocation: { latitude: 40.7128, longitude: -74.0060 },
+    // Set color scheme
+    colorScheme: 'light',
+    // Add extra HTTP headers to look more like a real browser
+    extraHTTPHeaders: {
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive',
+      'Upgrade-Insecure-Requests': '1'
+    }
+  });
+
+  // Remove webdriver property to avoid detection
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', {
+      get: () => false
+    });
+    
+    // Override plugins to look more realistic
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [1, 2, 3, 4, 5]
+    });
+    
+    // Override languages
+    Object.defineProperty(navigator, 'languages', {
+      get: () => ['en-US', 'en']
+    });
   });
 
   // Create or update browser instance
@@ -359,51 +399,79 @@ io.on("connection", async (socket) => {
       return;
     }
 
-    const page = await browserInstance.context.newPage();
-    await page.goto(url || "https://google.com");
-    const tabId = `tab_${++browserInstance.tabCounter}`;
-    browserInstance.pages[tabId] = page;
-    browserInstance.activeTabs = [...browserInstance.activeTabs, tabId];
-
-    // Listen for navigation events - broadcast to all viewers
-    page.on("framenavigated", (frame) => {
-      if (frame === page.mainFrame()) {
-        const viewers = browserInstance.tabViewers[tabId] || new Set();
-        viewers.forEach(socketId => {
-          const viewerSocket = io.sockets.sockets.get(socketId);
-          if (viewerSocket) {
-            viewerSocket.emit("url_changed", { tabId, url: page.url() });
-          }
-        });
-      }
-    });
-
-    // Start CDP screencast streaming
-    await startCDPScreencast(socket, tabId, browserInstance);
-
-    // Send immediate screenshot to the client that opened the tab
-    setTimeout(async () => {
+    try {
+      const page = await browserInstance.context.newPage();
+      
+      // Navigate with timeout and better error handling
       try {
-        const currentPage = browserInstance.pages[tabId];
-        if (currentPage && !currentPage.isClosed()) {
-          const screenshot = await currentPage.screenshot({
-            type: 'jpeg',
-            quality: 85,
-            fullPage: false,
-            timeout: 5000
+        await page.goto(url || "https://google.com", {
+          waitUntil: 'networkidle',
+          timeout: 30000
+        });
+      } catch (navError) {
+        console.error("Navigation error:", navError);
+        // Check if it's a blocked/forbidden error
+        if (navError.message.includes('net::ERR_BLOCKED_BY_CLIENT') || 
+            navError.message.includes('net::ERR_BLOCKED_BY_RESPONSE') ||
+            navError.message.includes('net::ERR_ACCESS_DENIED')) {
+          socket.emit("error", { 
+            message: `Site blocked: ${url}. The website may be blocking automated browsers. Try a different site or check server logs.` 
           });
-          socket.emit("screenshot", {
-            tabId,
-            image: screenshot.toString('base64')
+        } else {
+          socket.emit("error", { 
+            message: `Failed to load ${url}: ${navError.message}` 
           });
         }
-      } catch (error) {
-        // Screenshot might fail, that's okay
+        // Still create the tab so user can see the error
       }
-    }, 100);
+      
+      const tabId = `tab_${++browserInstance.tabCounter}`;
+      browserInstance.pages[tabId] = page;
+      browserInstance.activeTabs = [...browserInstance.activeTabs, tabId];
 
-    // Broadcast to all clients that a new tab was opened
-    io.emit("tab_opened", { tabId, url: page.url() });
+      // Listen for navigation events - broadcast to all viewers
+      page.on("framenavigated", (frame) => {
+        if (frame === page.mainFrame()) {
+          const viewers = browserInstance.tabViewers[tabId] || new Set();
+          viewers.forEach(socketId => {
+            const viewerSocket = io.sockets.sockets.get(socketId);
+            if (viewerSocket) {
+              viewerSocket.emit("url_changed", { tabId, url: page.url() });
+            }
+          });
+        }
+      });
+
+      // Start CDP screencast streaming
+      await startCDPScreencast(socket, tabId, browserInstance);
+
+      // Send immediate screenshot to the client that opened the tab
+      setTimeout(async () => {
+        try {
+          const currentPage = browserInstance.pages[tabId];
+          if (currentPage && !currentPage.isClosed()) {
+            const screenshot = await currentPage.screenshot({
+              type: 'jpeg',
+              quality: 85,
+              fullPage: false,
+              timeout: 5000
+            });
+            socket.emit("screenshot", {
+              tabId,
+              image: screenshot.toString('base64')
+            });
+          }
+        } catch (error) {
+          // Screenshot might fail, that's okay
+        }
+      }, 100);
+
+      // Broadcast to all clients that a new tab was opened
+      io.emit("tab_opened", { tabId, url: page.url() });
+    } catch (error) {
+      console.error("Error opening tab:", error);
+      socket.emit("error", { message: `Failed to open tab: ${error.message}` });
+    }
   });
 
   socket.on("list_tabs", async () => {
@@ -608,9 +676,24 @@ io.on("connection", async (socket) => {
     if (!page || page.isClosed()) return;
 
     try {
-      await page.goto(url);
+      await page.goto(url, {
+        waitUntil: 'networkidle',
+        timeout: 30000
+      });
     } catch (error) {
       console.error("Navigation error:", error);
+      // Check if it's a blocked/forbidden error
+      if (error.message.includes('net::ERR_BLOCKED_BY_CLIENT') || 
+          error.message.includes('net::ERR_BLOCKED_BY_RESPONSE') ||
+          error.message.includes('net::ERR_ACCESS_DENIED')) {
+        socket.emit("error", { 
+          message: `Site blocked: ${url}. The website may be blocking automated browsers.` 
+        });
+      } else {
+        socket.emit("error", { 
+          message: `Failed to navigate to ${url}: ${error.message}` 
+        });
+      }
     }
   });
 

@@ -178,6 +178,13 @@ export default function Main() {
       console.log("Disconnected from server");
     });
 
+    socket.on("error", ({ message }) => {
+      console.error("Server error:", message);
+      // Show error to user
+      setAuthError(message);
+      setIsLoading(false);
+    });
+
     socket.on("tabs_list", (tabs) => {
       setTabs(tabs);
     });
