@@ -3,6 +3,7 @@ import { useRef } from 'react';
 export const useWebRTC = () => {
   const peerConnectionsRef = useRef({}); // tabId -> RTCPeerConnection
   const dataChannelsRef = useRef({}); // tabId -> DataChannel
+  const chunkBuffersRef = useRef({}); // tabId -> Array of chunks
 
   const setupWebRTCForTab = (tabId, socketRef, setScreenshot, setIsLoading, setActiveTab, latestScreenshotRef, screenshotFrameRef, activeTabRef) => {
     let pc = peerConnectionsRef.current[tabId];
@@ -56,48 +57,102 @@ export const useWebRTC = () => {
             // Receive binary screenshot data
             if (event.data instanceof ArrayBuffer) {
               const dataSize = event.data.byteLength;
-              console.log(`[WebRTC Client] Received ${dataSize} bytes for tab ${tabId}`);
+              const dataView = new Uint8Array(event.data);
               
-              // Use Blob URL for better performance (avoids base64 conversion overhead)
-              const blob = new Blob([event.data], { type: 'image/jpeg' });
-              const dataUrl = URL.createObjectURL(blob);
-
-              // Check if this is the active tab
-              const currentActiveTab = activeTabRef?.current;
-              
-              if (tabId === currentActiveTab) {
-                // Clean up old blob URL to prevent memory leaks
-                if (latestScreenshotRef.current?.blobUrl) {
-                  URL.revokeObjectURL(latestScreenshotRef.current.blobUrl);
+              // Check if this is a chunked message (has header)
+              if (dataSize > 5 && dataView[0] <= 1) {
+                // This is a chunked message
+                const isFirstChunk = dataView[0] === 1;
+                const isLastChunk = dataView[1] === 1;
+                const totalChunks = dataView[2] | (dataView[3] << 8);
+                const chunkIndex = dataView[4];
+                
+                // Extract the actual chunk data (skip 5-byte header)
+                const chunkData = dataView.slice(5);
+                
+                if (!chunkBuffersRef.current[tabId]) {
+                  chunkBuffersRef.current[tabId] = new Array(totalChunks);
                 }
-
-                latestScreenshotRef.current = {
-                  tabId,
-                  image: dataUrl,
-                  blobUrl: dataUrl,
-                  timestamp: Date.now()
-                };
-
-                if (screenshotFrameRef.current) {
-                  cancelAnimationFrame(screenshotFrameRef.current);
-                }
-
-                screenshotFrameRef.current = requestAnimationFrame(() => {
-                  if (latestScreenshotRef.current && latestScreenshotRef.current.tabId === tabId) {
-                    setScreenshot(latestScreenshotRef.current.image);
-                    setIsLoading(false);
-                    screenshotFrameRef.current = null;
+                
+                chunkBuffersRef.current[tabId][chunkIndex] = chunkData;
+                
+                // Check if we have all chunks
+                const receivedChunks = chunkBuffersRef.current[tabId].filter(c => c !== undefined).length;
+                
+                if (isLastChunk && receivedChunks === totalChunks) {
+                  // Reassemble the image
+                  const totalSize = chunkBuffersRef.current[tabId].reduce((sum, chunk) => sum + chunk.length, 0);
+                  const reassembled = new Uint8Array(totalSize);
+                  let offset = 0;
+                  
+                  for (let i = 0; i < totalChunks; i++) {
+                    reassembled.set(chunkBuffersRef.current[tabId][i], offset);
+                    offset += chunkBuffersRef.current[tabId][i].length;
                   }
-                });
+                  
+                  // Clear chunks
+                  delete chunkBuffersRef.current[tabId];
+                  
+                  console.log(`[WebRTC Client] Received and reassembled ${totalSize} bytes (${totalChunks} chunks) for tab ${tabId}`);
+                  
+                  // Process the complete image
+                  processScreenshot(reassembled.buffer, tabId);
+                } else if (isFirstChunk) {
+                  console.log(`[WebRTC Client] Started receiving chunked frame (${totalChunks} chunks) for tab ${tabId}`);
+                }
               } else {
-                // If not active tab, revoke immediately to save memory
-                URL.revokeObjectURL(dataUrl);
+                // Single message (not chunked)
+                console.log(`[WebRTC Client] Received ${dataSize} bytes for tab ${tabId}`);
+                processScreenshot(event.data, tabId);
               }
             } else {
               console.warn(`[WebRTC Client] Received non-ArrayBuffer data for tab ${tabId}:`, typeof event.data);
             }
           } catch (error) {
             console.error(`[WebRTC Client] Error processing data channel message for tab ${tabId}:`, error);
+          }
+        };
+        
+        // Helper function to process screenshot
+        const processScreenshot = (imageBuffer, tabId) => {
+          try {
+            // Use Blob URL for better performance (avoids base64 conversion overhead)
+            const blob = new Blob([imageBuffer], { type: 'image/jpeg' });
+            const dataUrl = URL.createObjectURL(blob);
+
+            // Check if this is the active tab
+            const currentActiveTab = activeTabRef?.current;
+            
+            if (tabId === currentActiveTab) {
+              // Clean up old blob URL to prevent memory leaks
+              if (latestScreenshotRef.current?.blobUrl) {
+                URL.revokeObjectURL(latestScreenshotRef.current.blobUrl);
+              }
+
+              latestScreenshotRef.current = {
+                tabId,
+                image: dataUrl,
+                blobUrl: dataUrl,
+                timestamp: Date.now()
+              };
+
+              if (screenshotFrameRef.current) {
+                cancelAnimationFrame(screenshotFrameRef.current);
+              }
+
+              screenshotFrameRef.current = requestAnimationFrame(() => {
+                if (latestScreenshotRef.current && latestScreenshotRef.current.tabId === tabId) {
+                  setScreenshot(latestScreenshotRef.current.image);
+                  setIsLoading(false);
+                  screenshotFrameRef.current = null;
+                }
+              });
+            } else {
+              // If not active tab, revoke immediately to save memory
+              URL.revokeObjectURL(dataUrl);
+            }
+          } catch (error) {
+            console.error(`[WebRTC Client] Error processing screenshot for tab ${tabId}:`, error);
           }
         };
 

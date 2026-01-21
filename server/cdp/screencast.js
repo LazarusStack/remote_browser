@@ -81,7 +81,39 @@ export async function startCDPScreencast(socket, tabId, browserInstance) {
             }
 
             try {
-              dataChannel.send(imageBuffer);
+              // WebRTC DataChannel has a maximum message size of ~64KB
+              // If the image is larger, we need to chunk it
+              const MAX_CHUNK_SIZE = 60 * 1024; // 60KB to be safe
+              
+              if (imageBuffer.length <= MAX_CHUNK_SIZE) {
+                // Small enough to send in one message
+                dataChannel.send(imageBuffer);
+              } else {
+                // Need to chunk the data
+                const totalChunks = Math.ceil(imageBuffer.length / MAX_CHUNK_SIZE);
+                const bufferView = new Uint8Array(imageBuffer);
+                
+                for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+                  const start = chunkIndex * MAX_CHUNK_SIZE;
+                  const end = Math.min(start + MAX_CHUNK_SIZE, imageBuffer.length);
+                  const chunk = bufferView.slice(start, end);
+                  
+                  // Send chunk with metadata (first byte indicates chunk info)
+                  const chunkHeader = new Uint8Array(5);
+                  chunkHeader[0] = chunkIndex === 0 ? 1 : 0; // 1 = first chunk, 0 = continuation
+                  chunkHeader[1] = chunkIndex === totalChunks - 1 ? 1 : 0; // 1 = last chunk, 0 = more coming
+                  chunkHeader[2] = totalChunks & 0xFF; // Total chunks (low byte)
+                  chunkHeader[3] = (totalChunks >> 8) & 0xFF; // Total chunks (high byte)
+                  chunkHeader[4] = chunkIndex & 0xFF; // Chunk index
+                  
+                  const chunkWithHeader = new Uint8Array(chunkHeader.length + chunk.length);
+                  chunkWithHeader.set(chunkHeader);
+                  chunkWithHeader.set(chunk, chunkHeader.length);
+                  
+                  dataChannel.send(chunkWithHeader.buffer);
+                }
+              }
+              
               // Log first few frames to confirm sending
               const frameKey = `${socketId}_${tabId}_frame_count`;
               if (!lastLoggedState[frameKey]) {
@@ -89,7 +121,8 @@ export async function startCDPScreencast(socket, tabId, browserInstance) {
               }
               lastLoggedState[frameKey]++;
               if (lastLoggedState[frameKey] <= 3) {
-                console.log(`[Screencast] Sent frame #${lastLoggedState[frameKey]} (${imageBuffer.length} bytes) to socket ${socketId}, tab ${tabId}`);
+                const chunks = imageBuffer.length > MAX_CHUNK_SIZE ? Math.ceil(imageBuffer.length / MAX_CHUNK_SIZE) : 1;
+                console.log(`[Screencast] Sent frame #${lastLoggedState[frameKey]} (${imageBuffer.length} bytes${chunks > 1 ? `, ${chunks} chunks` : ''}) to socket ${socketId}, tab ${tabId}`);
               }
             } catch (error) {
               console.error(`[Screencast] ❌ Error sending screenshot binary through WebRTC DataChannel for socket ${socketId}, tab ${tabId}:`, error.message);
