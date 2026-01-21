@@ -5,15 +5,28 @@ export const useWebRTC = () => {
   const dataChannelsRef = useRef({}); // tabId -> DataChannel
 
   const setupWebRTCForTab = (tabId, socketRef, setScreenshot, setIsLoading, setActiveTab, latestScreenshotRef, screenshotFrameRef) => {
-    if (peerConnectionsRef.current[tabId]) {
-      return; // Already set up
+    let pc = peerConnectionsRef.current[tabId];
+    
+    // If PC doesn't exist, create it
+    if (!pc) {
+      try {
+        pc = new RTCPeerConnection({
+          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+        peerConnectionsRef.current[tabId] = pc;
+      } catch (error) {
+        console.error("Error creating WebRTC peer connection:", error);
+        return;
+      }
+    }
+
+    // Always set up handlers (in case PC was created earlier by handleWebRTCOffer)
+    // Check if handlers are already set up by checking if ondatachannel is our handler
+    if (pc.ondatachannel && pc.ondatachannel._isSetup) {
+      return; // Handlers already set up
     }
 
     try {
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-      });
-
       // Handle incoming data channel (server creates it)
       pc.ondatachannel = (event) => {
         const dataChannel = event.channel;
@@ -86,15 +99,16 @@ export const useWebRTC = () => {
       };
 
       pc.onconnectionstatechange = () => {
-        console.log(`WebRTC connection state for tab ${tabId}:`, pc.connectionState);
+        console.log(`[WebRTC Client] Connection state for tab ${tabId}:`, pc.connectionState);
         if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
           cleanupWebRTCForTab(tabId);
         }
       };
 
-      peerConnectionsRef.current[tabId] = pc;
+      // Mark handlers as set up
+      pc.ondatachannel._isSetup = true;
     } catch (error) {
-      console.error("Error setting up WebRTC:", error);
+      console.error("[WebRTC Client] Error setting up WebRTC:", error);
     }
   };
 
@@ -115,22 +129,50 @@ export const useWebRTC = () => {
   const handleWebRTCOffer = async (tabId, offer, socketRef) => {
     try {
       let pc = peerConnectionsRef.current[tabId];
+      
+      // If PC doesn't exist yet, create it now (race condition fix)
       if (!pc) {
-        // Setup will be called separately, but we need the PC here
-        return;
+        console.log(`[WebRTC Client] Creating peer connection for tab ${tabId} (offer received before setup)`);
+        pc = new RTCPeerConnection({
+          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+
+        // Note: Data channel handlers will be set up by setupWebRTCForTab
+        // We just create the PC here to handle the offer
+
+        // Handle ICE candidates
+        pc.onicecandidate = (event) => {
+          if (event.candidate && socketRef.current) {
+            socketRef.current.emit('webrtc_ice_candidate', {
+              tabId,
+              candidate: event.candidate
+            });
+          }
+        };
+
+        pc.onconnectionstatechange = () => {
+          console.log(`[WebRTC Client] Connection state for tab ${tabId}:`, pc.connectionState);
+          if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+            cleanupWebRTCForTab(tabId);
+          }
+        };
+
+        peerConnectionsRef.current[tabId] = pc;
       }
 
       if (pc && offer) {
+        console.log(`[WebRTC Client] Processing offer for tab ${tabId}`);
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
+        console.log(`[WebRTC Client] Sending answer for tab ${tabId}`);
         socketRef.current.emit("webrtc_answer", {
           tabId,
           answer: pc.localDescription
         });
       }
     } catch (error) {
-      console.error("Error handling WebRTC offer:", error);
+      console.error(`[WebRTC Client] Error handling WebRTC offer for tab ${tabId}:`, error);
     }
   };
 

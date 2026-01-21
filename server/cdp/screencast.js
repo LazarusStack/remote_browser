@@ -26,6 +26,9 @@ export async function startCDPScreencast(socket, tabId, browserInstance) {
       cdpSession = await page.context().newCDPSession(page);
       browserInstance.cdpSessions[tabId] = cdpSession;
 
+      // Track last logged state per socket to avoid spam
+      const lastLoggedState = {};
+
       // Listen for screencast frames
       cdpSession.on('Page.screencastFrame', async (event) => {
         if (!browserInstance.screencastActive[tabId] || !browserInstance.pages[tabId] || browserInstance.pages[tabId].isClosed()) {
@@ -46,20 +49,35 @@ export async function startCDPScreencast(socket, tabId, browserInstance) {
             const pc = browserInstance.webrtcConnections[socketId]?.[tabId];
             
             if (!dataChannel) {
-              // Data channel not set up yet for this viewer
-              console.warn(`[Screencast] Data channel not found for socket ${socketId}, tab ${tabId}`);
+              // Data channel not set up yet for this viewer (log only once)
+              const key = `${socketId}_${tabId}_no_channel`;
+              if (!lastLoggedState[key]) {
+                console.warn(`[Screencast] Data channel not found for socket ${socketId}, tab ${tabId}`);
+                lastLoggedState[key] = true;
+              }
               return;
             }
 
             // Check if data channel is open before sending
             if (dataChannel.readyState !== 'open') {
-              // Log why data channel isn't open (only once per state change to avoid spam)
-              if (dataChannel.readyState === 'connecting') {
-                console.log(`[Screencast] Data channel connecting for socket ${socketId}, tab ${tabId} (PC state: ${pc?.connectionState || 'unknown'})`);
-              } else if (dataChannel.readyState === 'closing' || dataChannel.readyState === 'closed') {
-                console.warn(`[Screencast] Data channel ${dataChannel.readyState} for socket ${socketId}, tab ${tabId} (PC state: ${pc?.connectionState || 'unknown'})`);
+              // Log state changes only (avoid spam)
+              const stateKey = `${socketId}_${tabId}_${dataChannel.readyState}_${pc?.connectionState || 'unknown'}`;
+              if (lastLoggedState[stateKey] !== true) {
+                if (dataChannel.readyState === 'connecting') {
+                  console.log(`[Screencast] Data channel connecting for socket ${socketId}, tab ${tabId} (PC state: ${pc?.connectionState || 'unknown'})`);
+                } else if (dataChannel.readyState === 'closing' || dataChannel.readyState === 'closed') {
+                  console.warn(`[Screencast] Data channel ${dataChannel.readyState} for socket ${socketId}, tab ${tabId} (PC state: ${pc?.connectionState || 'unknown'})`);
+                }
+                lastLoggedState[stateKey] = true;
               }
               return;
+            }
+            
+            // Channel is open - clear any previous warning states
+            const openKey = `${socketId}_${tabId}_open`;
+            if (!lastLoggedState[openKey]) {
+              console.log(`[Screencast] Data channel open for socket ${socketId}, tab ${tabId} - sending frames`);
+              lastLoggedState[openKey] = true;
             }
 
             try {
