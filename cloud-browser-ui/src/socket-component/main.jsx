@@ -617,7 +617,7 @@ export default function Main() {
                   onClick={() => {
                     switchTab(tab.tabId);
                   }}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-t-lg min-w-[200px] cursor-pointer ${
+                  className={`flex items-center gap-2 px-4 py-2 rounded-t-lg min-w-[200px] max-w-[400px] cursor-pointer ${
                     activeTab === tab.tabId
                       ? "bg-gray-900 border-t border-x border-gray-700"
                       : "bg-gray-700 hover:bg-gray-600"
