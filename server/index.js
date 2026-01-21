@@ -143,13 +143,16 @@ async function startCDPScreencast(socket, tabId, browserInstance) {
           const { data, sessionId } = event;
           
           // Broadcast frame to ALL clients viewing this tab
+          // Convert base64 to Buffer for efficient binary transfer via Socket.IO
+          const imageBuffer = Buffer.from(data, 'base64');
           const viewers = browserInstance.tabViewers[tabId] || new Set();
           viewers.forEach(socketId => {
             const viewerSocket = io.sockets.sockets.get(socketId);
             if (viewerSocket) {
-              viewerSocket.emit("screenshot", {
+              // Send binary data through Socket.IO (faster than base64)
+              viewerSocket.emit("screenshot_binary", {
                 tabId,
-                image: data
+                image: imageBuffer
               });
             }
           });
