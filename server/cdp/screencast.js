@@ -47,9 +47,12 @@ export async function startCDPScreencast(socket, tabId, browserInstance) {
               try {
                 dataChannel.send(imageBuffer);
               } catch (error) {
+                console.error("Error sending screenshot binary through WebRTC DataChannel:", error.message);
                 // WebRTC DataChannel error - skip this viewer
                 // Viewer will need to reconnect to receive frames
               }
+            } else {
+              console.error("WebRTC DataChannel not open for socket", socketId, "and tab", tabId);
             }
           });
 
