@@ -125,7 +125,9 @@ export default function Main() {
 
   // Initialize socket connection once
   useEffect(() => {
-    const socket = io("http://localhost:3000");
+    // Use environment variable or fallback to localhost for development
+    const serverUrl = import.meta.env.VITE_SERVER_URL || "http://localhost:3000";
+    const socket = io(serverUrl);
     socketRef.current = socket;
 
     socket.on("connect", () => {
@@ -815,7 +817,7 @@ export default function Main() {
                   onClick={() => {
                     switchTab(tab.tabId);
                   }}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-t-lg min-w-[200px] cursor-pointer ${
+                  className={`flex items-center gap-2 px-4 py-2 rounded-t-lg min-w-[200px] max-w-[400px] truncate cursor-pointer ${
                     activeTab === tab.tabId
                       ? "bg-gray-900 border-t border-x border-gray-700"
                       : "bg-gray-700 hover:bg-gray-600"

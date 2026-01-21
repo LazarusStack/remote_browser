@@ -9,8 +9,18 @@ const { RTCPeerConnection, RTCSessionDescription } = wrtc;
 
 const app = express();
 const server = http.createServer(app);
+
+// Get port and allowed origins from environment variables
+const PORT = process.env.PORT || 3000;
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS 
+  ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
+  : ["*"];
+
 const io = new Server(server, {
-  cors: { origin: "*" }
+  cors: { 
+    origin: ALLOWED_ORIGINS.includes("*") ? "*" : ALLOWED_ORIGINS,
+    credentials: true
+  }
 });
 
 // Mock browser list - in future, fetch from database
@@ -730,8 +740,9 @@ io.on("connection", async (socket) => {
 (async () => {
   // Initialize chromium reference (browsers will be initialized on-demand)
   await initChromium();
-  server.listen(3000, () => {
-    console.log("Server running on port 3000");
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Allowed origins: ${ALLOWED_ORIGINS.join(", ")}`);
     console.log("Available browser codes:", browserList.map(b => `${b.code} (${b.name})`).join(", "));
   });
 })();
