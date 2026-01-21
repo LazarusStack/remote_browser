@@ -13,9 +13,9 @@ export const useWebRTC = () => {
       try {
         // Use STUN and TURN servers for better connectivity
         // TURN server is needed when direct connection fails (NAT/firewall issues)
-        const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:free.expressturn.com:3478';
-        const turnUsername = import.meta.env.VITE_TURN_USERNAME || '000000002084391365';
-        const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || '3tXAhpxpPfiRAQKaeTPPyNl2j3c=';
+        const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:13.232.240.127:3478';
+        const turnUsername = import.meta.env.VITE_TURN_USERNAME || 'turnuser';
+        const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || 'turnpassword';
         
         pc = new RTCPeerConnection({
           iceServers: [
@@ -297,9 +297,9 @@ export const useWebRTC = () => {
         console.log(`[WebRTC Client] Creating peer connection for tab ${tabId} (offer received before setup)`);
         // Use STUN and TURN servers for better connectivity
         // TURN server is needed when direct connection fails (NAT/firewall issues)
-        const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:free.expressturn.com:3478';
-        const turnUsername = import.meta.env.VITE_TURN_USERNAME || '000000002084391365';
-        const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || '3tXAhpxpPfiRAQKaeTPPyNl2j3c=';
+        const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:13.232.240.127:3478';
+        const turnUsername = import.meta.env.VITE_TURN_USERNAME || 'turnuser';
+        const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || 'turnpassword';
         
         pc = new RTCPeerConnection({
           iceServers: [
