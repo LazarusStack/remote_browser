@@ -108,7 +108,7 @@ export const useSocket = ({
     // Handle WebRTC offer from server
     socket.on("webrtc_offer", async ({ tabId, offer }) => {
       if (handleWebRTCOffer) {
-        handleWebRTCOffer(tabId, offer, socketRef);
+        handleWebRTCOffer(tabId, offer, socket); // Pass socket directly instead of socketRef
       } else {
         // Fallback: handle directly if hook not provided
         try {
@@ -121,7 +121,7 @@ export const useSocket = ({
             await pc.setRemoteDescription(new RTCSessionDescription(offer));
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
-            socketRef.current.emit("webrtc_answer", {
+            socket.emit("webrtc_answer", {
               tabId,
               answer: pc.localDescription
             });

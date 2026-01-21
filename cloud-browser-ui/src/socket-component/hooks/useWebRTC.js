@@ -91,17 +91,65 @@ export const useWebRTC = () => {
       // Handle ICE candidates
       pc.onicecandidate = (event) => {
         if (event.candidate && socketRef.current) {
+          const candidate = event.candidate;
+          console.log(`[WebRTC Client] ICE candidate generated for tab ${tabId}:`, {
+            candidate: candidate.candidate,
+            sdpMLineIndex: candidate.sdpMLineIndex,
+            sdpMid: candidate.sdpMid
+          });
           socketRef.current.emit('webrtc_ice_candidate', {
             tabId,
-            candidate: event.candidate
+            candidate: candidate
           });
+        } else {
+          console.log(`[WebRTC Client] ICE candidate gathering complete for tab ${tabId}`);
         }
       };
 
+      // Track ICE connection state
+      pc.oniceconnectionstatechange = () => {
+        const iceState = pc.iceConnectionState;
+        console.log(`[WebRTC Client] ICE connection state changed for tab ${tabId}: ${iceState} (PC state: ${pc.connectionState})`);
+        
+        if (iceState === 'failed') {
+          console.error(`[WebRTC Client] ICE connection failed for tab ${tabId} - possible causes:`, {
+            networkIssue: 'Firewall/NAT blocking UDP',
+            stunIssue: 'STUN server unreachable',
+            noCandidates: 'No ICE candidates exchanged'
+          });
+        } else if (iceState === 'disconnected') {
+          console.warn(`[WebRTC Client] ICE connection disconnected for tab ${tabId}`);
+        } else if (iceState === 'connected' || iceState === 'completed') {
+          console.log(`[WebRTC Client] ✅ ICE connection ${iceState} for tab ${tabId}`);
+        }
+      };
+
+      // Track ICE gathering state
+      pc.onicegatheringstatechange = () => {
+        console.log(`[WebRTC Client] ICE gathering state for tab ${tabId}: ${pc.iceGatheringState}`);
+      };
+
       pc.onconnectionstatechange = () => {
-        console.log(`[WebRTC Client] Connection state for tab ${tabId}:`, pc.connectionState);
-        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        const connState = pc.connectionState;
+        const iceState = pc.iceConnectionState;
+        const gatheringState = pc.iceGatheringState;
+        
+        console.log(`[WebRTC Client] Connection state changed for tab ${tabId}:`, {
+          connectionState: connState,
+          iceConnectionState: iceState,
+          iceGatheringState: gatheringState
+        });
+        
+        if (connState === 'failed' || connState === 'closed') {
+          console.error(`[WebRTC Client] Connection ${connState} for tab ${tabId} - cleaning up`);
+          console.error(`[WebRTC Client] Final states before cleanup:`, {
+            connectionState: connState,
+            iceConnectionState: iceState,
+            iceGatheringState: gatheringState
+          });
           cleanupWebRTCForTab(tabId);
+        } else if (connState === 'connected') {
+          console.log(`[WebRTC Client] ✅ Connection established successfully for tab ${tabId}`);
         }
       };
 
@@ -126,8 +174,16 @@ export const useWebRTC = () => {
     });
   };
 
-  const handleWebRTCOffer = async (tabId, offer, socketRef) => {
+  const handleWebRTCOffer = async (tabId, offer, socketOrRef) => {
     try {
+      // Handle both socket object and socketRef
+      const socket = socketOrRef?.current || socketOrRef;
+      
+      if (!socket || typeof socket.emit !== 'function') {
+        console.error(`[WebRTC Client] Invalid socket for tab ${tabId}`);
+        return;
+      }
+
       let pc = peerConnectionsRef.current[tabId];
       
       // If PC doesn't exist yet, create it now (race condition fix)
@@ -142,18 +198,66 @@ export const useWebRTC = () => {
 
         // Handle ICE candidates
         pc.onicecandidate = (event) => {
-          if (event.candidate && socketRef.current) {
-            socketRef.current.emit('webrtc_ice_candidate', {
-              tabId,
-              candidate: event.candidate
+          if (event.candidate && socket) {
+            const candidate = event.candidate;
+            console.log(`[WebRTC Client] ICE candidate generated for tab ${tabId}:`, {
+              candidate: candidate.candidate,
+              sdpMLineIndex: candidate.sdpMLineIndex,
+              sdpMid: candidate.sdpMid
             });
+            socket.emit('webrtc_ice_candidate', {
+              tabId,
+              candidate: candidate
+            });
+          } else {
+            console.log(`[WebRTC Client] ICE candidate gathering complete for tab ${tabId}`);
           }
         };
 
+        // Track ICE connection state
+        pc.oniceconnectionstatechange = () => {
+          const iceState = pc.iceConnectionState;
+          console.log(`[WebRTC Client] ICE connection state changed for tab ${tabId}: ${iceState} (PC state: ${pc.connectionState})`);
+          
+          if (iceState === 'failed') {
+            console.error(`[WebRTC Client] ICE connection failed for tab ${tabId} - possible causes:`, {
+              networkIssue: 'Firewall/NAT blocking UDP',
+              stunIssue: 'STUN server unreachable',
+              noCandidates: 'No ICE candidates exchanged'
+            });
+          } else if (iceState === 'disconnected') {
+            console.warn(`[WebRTC Client] ICE connection disconnected for tab ${tabId}`);
+          } else if (iceState === 'connected' || iceState === 'completed') {
+            console.log(`[WebRTC Client] ✅ ICE connection ${iceState} for tab ${tabId}`);
+          }
+        };
+
+        // Track ICE gathering state
+        pc.onicegatheringstatechange = () => {
+          console.log(`[WebRTC Client] ICE gathering state for tab ${tabId}: ${pc.iceGatheringState}`);
+        };
+
         pc.onconnectionstatechange = () => {
-          console.log(`[WebRTC Client] Connection state for tab ${tabId}:`, pc.connectionState);
-          if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+          const connState = pc.connectionState;
+          const iceState = pc.iceConnectionState;
+          const gatheringState = pc.iceGatheringState;
+          
+          console.log(`[WebRTC Client] Connection state changed for tab ${tabId}:`, {
+            connectionState: connState,
+            iceConnectionState: iceState,
+            iceGatheringState: gatheringState
+          });
+          
+          if (connState === 'failed' || connState === 'closed') {
+            console.error(`[WebRTC Client] Connection ${connState} for tab ${tabId} - cleaning up`);
+            console.error(`[WebRTC Client] Final states before cleanup:`, {
+              connectionState: connState,
+              iceConnectionState: iceState,
+              iceGatheringState: gatheringState
+            });
             cleanupWebRTCForTab(tabId);
+          } else if (connState === 'connected') {
+            console.log(`[WebRTC Client] ✅ Connection established successfully for tab ${tabId}`);
           }
         };
 
@@ -166,7 +270,7 @@ export const useWebRTC = () => {
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         console.log(`[WebRTC Client] Sending answer for tab ${tabId}`);
-        socketRef.current.emit("webrtc_answer", {
+        socket.emit("webrtc_answer", {
           tabId,
           answer: pc.localDescription
         });
@@ -179,11 +283,23 @@ export const useWebRTC = () => {
   const handleWebRTCIceCandidate = async (tabId, candidate) => {
     try {
       const pc = peerConnectionsRef.current[tabId];
+      if (!pc) {
+        console.warn(`[WebRTC Client] ICE candidate received but no peer connection for tab ${tabId}`);
+        return;
+      }
+      
       if (pc && candidate) {
+        console.log(`[WebRTC Client] ICE candidate received from server for tab ${tabId}:`, {
+          candidate: candidate.candidate,
+          sdpMLineIndex: candidate.sdpMLineIndex,
+          sdpMid: candidate.sdpMid
+        });
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        console.log(`[WebRTC Client] ICE candidate added successfully for tab ${tabId} (ICE state: ${pc.iceConnectionState})`);
       }
     } catch (error) {
-      console.error("Error adding ICE candidate:", error);
+      console.error(`[WebRTC Client] Error adding ICE candidate for tab ${tabId}:`, error.message);
+      console.error(`[WebRTC Client] Candidate that failed:`, candidate);
     }
   };
 

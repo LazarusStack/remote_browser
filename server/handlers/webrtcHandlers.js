@@ -31,15 +31,30 @@ export function setupWebRTCHandlers(socket) {
 
   socket.on("webrtc_ice_candidate", async ({ tabId, candidate }) => {
     const browserInstance = getBrowserInstance(socket);
-    if (!browserInstance) return;
+    if (!browserInstance) {
+      console.warn(`[WebRTC] ICE candidate received but no browser instance for socket ${socket.id}`);
+      return;
+    }
 
     try {
       const pc = browserInstance.webrtcConnections[socket.id]?.[tabId];
+      if (!pc) {
+        console.warn(`[WebRTC] ICE candidate received but no peer connection for socket ${socket.id}, tab ${tabId}`);
+        return;
+      }
+      
       if (pc && candidate) {
+        console.log(`[WebRTC] ICE candidate received from client for tab ${tabId}, socket ${socket.id}:`, {
+          candidate: candidate.candidate,
+          sdpMLineIndex: candidate.sdpMLineIndex,
+          sdpMid: candidate.sdpMid
+        });
         await pc.addIceCandidate(candidate);
+        console.log(`[WebRTC] ICE candidate added successfully for tab ${tabId}, socket ${socket.id} (ICE state: ${pc.iceConnectionState})`);
       }
     } catch (error) {
-      console.error("Error adding ICE candidate:", error);
+      console.error(`[WebRTC] Error adding ICE candidate for socket ${socket.id}, tab ${tabId}:`, error.message);
+      console.error(`[WebRTC] Candidate that failed:`, candidate);
     }
   });
 }

@@ -50,18 +50,66 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
       // Handle ICE candidates
       pc.onicecandidate = (event) => {
         if (event.candidate) {
+          const candidate = event.candidate;
+          console.log(`[WebRTC] ICE candidate generated for tab ${tabId}, socket ${socket.id}:`, {
+            candidate: candidate.candidate,
+            sdpMLineIndex: candidate.sdpMLineIndex,
+            sdpMid: candidate.sdpMid
+          });
           socket.emit('webrtc_ice_candidate', {
             tabId,
-            candidate: event.candidate
+            candidate: candidate
           });
+        } else {
+          console.log(`[WebRTC] ICE candidate gathering complete for tab ${tabId}, socket ${socket.id}`);
         }
       };
 
+      // Track ICE connection state
+      pc.oniceconnectionstatechange = () => {
+        const iceState = pc.iceConnectionState;
+        console.log(`[WebRTC] ICE connection state changed for tab ${tabId}, socket ${socket.id}: ${iceState} (PC state: ${pc.connectionState})`);
+        
+        if (iceState === 'failed') {
+          console.error(`[WebRTC] ICE connection failed for tab ${tabId}, socket ${socket.id} - possible causes:`, {
+            networkIssue: 'Firewall/NAT blocking UDP',
+            stunIssue: 'STUN server unreachable',
+            noCandidates: 'No ICE candidates exchanged'
+          });
+        } else if (iceState === 'disconnected') {
+          console.warn(`[WebRTC] ICE connection disconnected for tab ${tabId}, socket ${socket.id}`);
+        } else if (iceState === 'connected' || iceState === 'completed') {
+          console.log(`[WebRTC] ICE connection ${iceState} for tab ${tabId}, socket ${socket.id}`);
+        }
+      };
+
+      // Track ICE gathering state
+      pc.onicegatheringstatechange = () => {
+        console.log(`[WebRTC] ICE gathering state for tab ${tabId}, socket ${socket.id}: ${pc.iceGatheringState}`);
+      };
+
       pc.onconnectionstatechange = () => {
-        console.log(`[WebRTC] Connection state changed for tab ${tabId}, socket ${socket.id}: ${pc.connectionState} (DC state: ${dataChannel.readyState})`);
-        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-          console.warn(`[WebRTC] Connection ${pc.connectionState} for tab ${tabId}, socket ${socket.id} - cleaning up`);
+        const connState = pc.connectionState;
+        const iceState = pc.iceConnectionState;
+        const gatheringState = pc.iceGatheringState;
+        
+        console.log(`[WebRTC] Connection state changed for tab ${tabId}, socket ${socket.id}:`, {
+          connectionState: connState,
+          iceConnectionState: iceState,
+          iceGatheringState: gatheringState,
+          dataChannelState: dataChannel.readyState
+        });
+        
+        if (connState === 'failed' || connState === 'closed') {
+          console.warn(`[WebRTC] Connection ${connState} for tab ${tabId}, socket ${socket.id} - cleaning up`);
+          console.warn(`[WebRTC] Final states before cleanup:`, {
+            connectionState: connState,
+            iceConnectionState: iceState,
+            iceGatheringState: gatheringState
+          });
           cleanupWebRTC(socket.id, tabId, browserInstance);
+        } else if (connState === 'connected') {
+          console.log(`[WebRTC] ✅ Connection established successfully for tab ${tabId}, socket ${socket.id}`);
         }
       };
 
