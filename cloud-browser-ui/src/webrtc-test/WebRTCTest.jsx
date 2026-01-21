@@ -83,9 +83,9 @@ export default function WebRTCTest() {
       ]
       
       // Add TURN server (use environment variable or default)
-      const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:free.expressturn.com:3478'
-      const turnUsername = import.meta.env.VITE_TURN_USERNAME || '000000002084391365'
-      const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || '3tXAhpxpPfiRAQKaeTPPyNl2j3c='
+      const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:13.232.240.127:3478'
+      const turnUsername = import.meta.env.VITE_TURN_USERNAME || 'turnuser'
+      const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || 'turnpassword'
       
       iceServers.push({
         urls: turnUrl,

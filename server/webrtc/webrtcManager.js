@@ -16,9 +16,9 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
     if (!pc) {
       // Use STUN and TURN servers for better connectivity
       // TURN server is needed when direct connection fails (NAT/firewall issues)
-      const turnUrl = process.env.TURN_URL || 'turn:free.expressturn.com:3478';
-      const turnUsername = process.env.TURN_USERNAME || '000000002084391365';
-      const turnCredential = process.env.TURN_CREDENTIAL || '3tXAhpxpPfiRAQKaeTPPyNl2j3c=';
+      const turnUrl = process.env.TURN_URL || 'turn:13.232.240.127:3478';
+      const turnUsername = process.env.TURN_USERNAME || 'turnuser';
+      const turnCredential = process.env.TURN_CREDENTIAL || 'turnpassword';
       
       pc = new RTCPeerConnection({
         iceServers: [

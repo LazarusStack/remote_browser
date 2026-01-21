@@ -13,9 +13,9 @@ function getIceServers() {
   ];
 
   // Add TURN server if configured
-  const turnUrl = process.env.TURN_URL || 'turn:free.expressturn.com:3478';
-  const turnUsername = process.env.TURN_USERNAME || '000000002084391365';
-  const turnCredential = process.env.TURN_CREDENTIAL || '3tXAhpxpPfiRAQKaeTPPyNl2j3c=';
+  const turnUrl = process.env.TURN_URL || 'turn:13.232.240.127:3478';
+  const turnUsername = process.env.TURN_USERNAME || 'turnuser';
+  const turnCredential = process.env.TURN_CREDENTIAL || 'turnpassword';
 
   if (turnUrl && turnUsername && turnCredential) {
     iceServers.push({
