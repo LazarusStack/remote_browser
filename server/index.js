@@ -133,11 +133,30 @@ async function startCDPScreencast(socket, tabId, browserInstance) {
       cdpSession = await page.context().newCDPSession(page);
       browserInstance.cdpSessions[tabId] = cdpSession;
 
-      // Listen for screencast frames
+      // Listen for screencast frames with throttling
+      let lastFrameTime = 0;
+      let frameCount = 0;
+      let skippedFrames = 0;
+      let startTime = Date.now();
+      const minFrameInterval = 50; // ~20 FPS max (50ms between frames)
+      
       cdpSession.on('Page.screencastFrame', async (event) => {
         if (!browserInstance.screencastActive[tabId] || !browserInstance.pages[tabId] || browserInstance.pages[tabId].isClosed()) {
           return;
         }
+
+        // Throttle frames to prevent overwhelming the network
+        const now = Date.now();
+        if (now - lastFrameTime < minFrameInterval) {
+          skippedFrames++;
+          // Acknowledge but skip processing this frame
+          try {
+            await cdpSession.send('Page.screencastFrameAck', { sessionId: event.sessionId }).catch(() => {});
+          } catch {}
+          return;
+        }
+        lastFrameTime = now;
+        frameCount++;
 
         try {
           const { data, sessionId } = event;
@@ -156,6 +175,14 @@ async function startCDPScreencast(socket, tabId, browserInstance) {
               });
             }
           });
+          
+          // Log performance stats every 60 frames (~3 seconds at 20 FPS)
+          if (frameCount % 60 === 0) {
+            const elapsed = (Date.now() - startTime) / 1000;
+            const fps = Math.round((frameCount / elapsed) * 10) / 10;
+            const imageSizeKB = Math.round(imageBuffer.length / 1024);
+            console.log(`Tab ${tabId}: ${frameCount} frames sent (${fps} FPS), ${skippedFrames} skipped, ~${imageSizeKB}KB/frame`);
+          }
 
           // Notify CDP that we've processed the frame
           await cdpSession.send('Page.screencastFrameAck', { sessionId }).catch(() => {
@@ -183,7 +210,7 @@ async function startCDPScreencast(socket, tabId, browserInstance) {
       quality: 85,
       maxWidth: 1920,
       maxHeight: 1080,
-      everyNthFrame: 1
+      everyNthFrame: 2 // Skip every other frame to reduce bandwidth (keeps quality/resolution)
     });
 
     browserInstance.screencastActive[tabId] = true;
