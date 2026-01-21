@@ -14,8 +14,20 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
     // Create or reuse peer connection for this tab
     let pc = browserInstance.webrtcConnections[socket.id][tabId];
     if (!pc) {
+      // Use STUN and TURN servers for better connectivity
+      // TURN server is needed when direct connection fails (NAT/firewall issues)
       pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          // Add TURN server if you have one (required for many network configurations)
+          // Example TURN server (replace with your own):
+          // {
+          //   urls: 'turn:your-turn-server.com:3478',
+          //   username: 'username',
+          //   credential: 'password'
+          // }
+        ]
       });
 
       // Create data channel for screenshot data

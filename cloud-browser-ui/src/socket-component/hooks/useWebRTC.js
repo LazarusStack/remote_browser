@@ -10,8 +10,20 @@ export const useWebRTC = () => {
     // If PC doesn't exist, create it
     if (!pc) {
       try {
+        // Use STUN and TURN servers for better connectivity
+        // TURN server is needed when direct connection fails (NAT/firewall issues)
         pc = new RTCPeerConnection({
-          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            // Add TURN server if you have one (required for many network configurations)
+            // Example TURN server (replace with your own):
+            // {
+            //   urls: 'turn:your-turn-server.com:3478',
+            //   username: 'username',
+            //   credential: 'password'
+            // }
+          ]
         });
         peerConnectionsRef.current[tabId] = pc;
       } catch (error) {
@@ -90,17 +102,27 @@ export const useWebRTC = () => {
 
       // Handle ICE candidates
       pc.onicecandidate = (event) => {
-        if (event.candidate && socketRef.current) {
+        if (event.candidate) {
           const candidate = event.candidate;
           console.log(`[WebRTC Client] ICE candidate generated for tab ${tabId}:`, {
             candidate: candidate.candidate,
             sdpMLineIndex: candidate.sdpMLineIndex,
             sdpMid: candidate.sdpMid
           });
-          socketRef.current.emit('webrtc_ice_candidate', {
-            tabId,
-            candidate: candidate
-          });
+          
+          if (socketRef.current && typeof socketRef.current.emit === 'function') {
+            try {
+              socketRef.current.emit('webrtc_ice_candidate', {
+                tabId,
+                candidate: candidate
+              });
+              console.log(`[WebRTC Client] ICE candidate sent to server for tab ${tabId}`);
+            } catch (error) {
+              console.error(`[WebRTC Client] Error sending ICE candidate for tab ${tabId}:`, error);
+            }
+          } else {
+            console.warn(`[WebRTC Client] Cannot send ICE candidate - socket not available for tab ${tabId}`);
+          }
         } else {
           console.log(`[WebRTC Client] ICE candidate gathering complete for tab ${tabId}`);
         }
@@ -177,10 +199,23 @@ export const useWebRTC = () => {
   const handleWebRTCOffer = async (tabId, offer, socketOrRef) => {
     try {
       // Handle both socket object and socketRef
-      const socket = socketOrRef?.current || socketOrRef;
+      let socket = socketOrRef?.current || socketOrRef;
+      
+      // If socket is a ref but current is null, try to get it from peerConnectionsRef
+      // This is a fallback for when socket isn't ready yet
+      if (!socket || typeof socket.emit !== 'function') {
+        // Try to get socket from socketRef if available
+        if (socketOrRef && typeof socketOrRef === 'object' && 'current' in socketOrRef) {
+          socket = socketOrRef.current;
+        }
+      }
       
       if (!socket || typeof socket.emit !== 'function') {
-        console.error(`[WebRTC Client] Invalid socket for tab ${tabId}`);
+        console.error(`[WebRTC Client] Invalid socket for tab ${tabId}`, {
+          socketType: typeof socket,
+          hasEmit: socket && typeof socket.emit,
+          socketOrRefType: typeof socketOrRef
+        });
         return;
       }
 
@@ -189,26 +224,54 @@ export const useWebRTC = () => {
       // If PC doesn't exist yet, create it now (race condition fix)
       if (!pc) {
         console.log(`[WebRTC Client] Creating peer connection for tab ${tabId} (offer received before setup)`);
+        // Use STUN and TURN servers for better connectivity
+        // TURN server is needed when direct connection fails (NAT/firewall issues)
         pc = new RTCPeerConnection({
-          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            // Add TURN server if you have one (required for many network configurations)
+            // Example TURN server (replace with your own):
+            // {
+            //   urls: 'turn:your-turn-server.com:3478',
+            //   username: 'username',
+            //   credential: 'password'
+            // }
+          ]
         });
 
         // Note: Data channel handlers will be set up by setupWebRTCForTab
         // We just create the PC here to handle the offer
 
-        // Handle ICE candidates
+        // Handle ICE candidates - store socket reference for later use
+        const candidateSocket = socket;
         pc.onicecandidate = (event) => {
-          if (event.candidate && socket) {
+          if (event.candidate) {
             const candidate = event.candidate;
             console.log(`[WebRTC Client] ICE candidate generated for tab ${tabId}:`, {
               candidate: candidate.candidate,
               sdpMLineIndex: candidate.sdpMLineIndex,
               sdpMid: candidate.sdpMid
             });
-            socket.emit('webrtc_ice_candidate', {
-              tabId,
-              candidate: candidate
-            });
+            
+            // Use the socket that was passed in
+            if (candidateSocket && typeof candidateSocket.emit === 'function') {
+              try {
+                candidateSocket.emit('webrtc_ice_candidate', {
+                  tabId,
+                  candidate: candidate
+                });
+                console.log(`[WebRTC Client] ✅ ICE candidate sent to server for tab ${tabId}`);
+              } catch (error) {
+                console.error(`[WebRTC Client] ❌ Error sending ICE candidate for tab ${tabId}:`, error);
+              }
+            } else {
+              console.warn(`[WebRTC Client] ⚠️ Cannot send ICE candidate - socket not available for tab ${tabId}`, {
+                hasSocket: !!candidateSocket,
+                socketType: typeof candidateSocket,
+                hasEmit: candidateSocket && typeof candidateSocket.emit
+              });
+            }
           } else {
             console.log(`[WebRTC Client] ICE candidate gathering complete for tab ${tabId}`);
           }
