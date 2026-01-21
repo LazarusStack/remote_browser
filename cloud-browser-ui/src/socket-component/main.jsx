@@ -31,6 +31,7 @@ export default function Main() {
   const scaleRef = useRef(1);
   const latestScreenshotRef = useRef(null);
   const screenshotFrameRef = useRef(null);
+  const activeTabRef = useRef(null);
 
   // Custom hooks
   const { offsetX, offsetY, setOffsetX, setOffsetY } = useOffsets();
@@ -55,7 +56,8 @@ export default function Main() {
       setIsLoading,
       setActiveTab,
       latestScreenshotRef,
-      screenshotFrameRef
+      screenshotFrameRef,
+      activeTabRef
     );
   };
 
@@ -71,7 +73,7 @@ export default function Main() {
     setScreenshot,
     setUrl,
     tabs,
-    setupWebRTCWrapper,
+    setupWebRTCForTab: setupWebRTCWrapper,
     cleanupWebRTCForTab,
     handleWebRTCOffer: (tabId, offer) => handleWebRTCOffer(tabId, offer, socketRef),
     handleWebRTCIceCandidate,
@@ -139,6 +141,11 @@ export default function Main() {
       setCookieStatus({ type: "error", message: `Invalid JSON: ${error.message}` });
     }
   };
+
+  // Update activeTabRef when activeTab changes
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
 
   // Update currentUrl when activeTab changes
   useEffect(() => {

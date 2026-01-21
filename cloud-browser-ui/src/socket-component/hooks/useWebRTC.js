@@ -4,7 +4,7 @@ export const useWebRTC = () => {
   const peerConnectionsRef = useRef({}); // tabId -> RTCPeerConnection
   const dataChannelsRef = useRef({}); // tabId -> DataChannel
 
-  const setupWebRTCForTab = (tabId, socketRef, setScreenshot, setIsLoading, setActiveTab, latestScreenshotRef, screenshotFrameRef) => {
+  const setupWebRTCForTab = (tabId, socketRef, setScreenshot, setIsLoading, setActiveTab, latestScreenshotRef, screenshotFrameRef, activeTabRef) => {
     let pc = peerConnectionsRef.current[tabId];
     
     // If PC doesn't exist, create it
@@ -47,18 +47,24 @@ export const useWebRTC = () => {
         dataChannel.binaryType = 'arraybuffer';
 
         dataChannel.onopen = () => {
-          console.log(`WebRTC DataChannel opened for tab ${tabId}`);
+          console.log(`[WebRTC Client] ✅ DataChannel opened for tab ${tabId}`);
           dataChannelsRef.current[tabId] = dataChannel;
         };
 
         dataChannel.onmessage = (event) => {
-          // Receive binary screenshot data
-          if (event.data instanceof ArrayBuffer) {
-            // Use Blob URL for better performance (avoids base64 conversion overhead)
-            const blob = new Blob([event.data], { type: 'image/jpeg' });
-            const dataUrl = URL.createObjectURL(blob);
+          try {
+            // Receive binary screenshot data
+            if (event.data instanceof ArrayBuffer) {
+              const dataSize = event.data.byteLength;
+              console.log(`[WebRTC Client] Received ${dataSize} bytes for tab ${tabId}`);
+              
+              // Use Blob URL for better performance (avoids base64 conversion overhead)
+              const blob = new Blob([event.data], { type: 'image/jpeg' });
+              const dataUrl = URL.createObjectURL(blob);
 
-            setActiveTab((currentActiveTab) => {
+              // Check if this is the active tab
+              const currentActiveTab = activeTabRef?.current;
+              
               if (tabId === currentActiveTab) {
                 // Clean up old blob URL to prevent memory leaks
                 if (latestScreenshotRef.current?.blobUrl) {
@@ -87,8 +93,11 @@ export const useWebRTC = () => {
                 // If not active tab, revoke immediately to save memory
                 URL.revokeObjectURL(dataUrl);
               }
-              return currentActiveTab;
-            });
+            } else {
+              console.warn(`[WebRTC Client] Received non-ArrayBuffer data for tab ${tabId}:`, typeof event.data);
+            }
+          } catch (error) {
+            console.error(`[WebRTC Client] Error processing data channel message for tab ${tabId}:`, error);
           }
         };
 

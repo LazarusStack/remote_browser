@@ -76,14 +76,23 @@ export async function startCDPScreencast(socket, tabId, browserInstance) {
             // Channel is open - clear any previous warning states
             const openKey = `${socketId}_${tabId}_open`;
             if (!lastLoggedState[openKey]) {
-              console.log(`[Screencast] Data channel open for socket ${socketId}, tab ${tabId} - sending frames`);
+              console.log(`[Screencast] ✅ Data channel open for socket ${socketId}, tab ${tabId} - sending frames`);
               lastLoggedState[openKey] = true;
             }
 
             try {
               dataChannel.send(imageBuffer);
+              // Log first few frames to confirm sending
+              const frameKey = `${socketId}_${tabId}_frame_count`;
+              if (!lastLoggedState[frameKey]) {
+                lastLoggedState[frameKey] = 0;
+              }
+              lastLoggedState[frameKey]++;
+              if (lastLoggedState[frameKey] <= 3) {
+                console.log(`[Screencast] Sent frame #${lastLoggedState[frameKey]} (${imageBuffer.length} bytes) to socket ${socketId}, tab ${tabId}`);
+              }
             } catch (error) {
-              console.error(`Error sending screenshot binary through WebRTC DataChannel for socket ${socketId}, tab ${tabId}:`, error.message);
+              console.error(`[Screencast] ❌ Error sending screenshot binary through WebRTC DataChannel for socket ${socketId}, tab ${tabId}:`, error.message);
               // WebRTC DataChannel error - skip this viewer
               // Viewer will need to reconnect to receive frames
             }
