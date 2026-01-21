@@ -43,15 +43,29 @@ export async function startCDPScreencast(socket, tabId, browserInstance) {
           viewers.forEach(socketId => {
             // Send binary data through WebRTC DataChannel
             const dataChannel = browserInstance.webrtcDataChannels[socketId]?.[tabId];
-            console.log("dataChannel", dataChannel);
-            console.log("imageBuffer", imageBuffer);
-            console.log("browserInstance.webrtcDataChannels", browserInstance.webrtcDataChannels);
-
+            const pc = browserInstance.webrtcConnections[socketId]?.[tabId];
             
+            if (!dataChannel) {
+              // Data channel not set up yet for this viewer
+              console.warn(`[Screencast] Data channel not found for socket ${socketId}, tab ${tabId}`);
+              return;
+            }
+
+            // Check if data channel is open before sending
+            if (dataChannel.readyState !== 'open') {
+              // Log why data channel isn't open (only once per state change to avoid spam)
+              if (dataChannel.readyState === 'connecting') {
+                console.log(`[Screencast] Data channel connecting for socket ${socketId}, tab ${tabId} (PC state: ${pc?.connectionState || 'unknown'})`);
+              } else if (dataChannel.readyState === 'closing' || dataChannel.readyState === 'closed') {
+                console.warn(`[Screencast] Data channel ${dataChannel.readyState} for socket ${socketId}, tab ${tabId} (PC state: ${pc?.connectionState || 'unknown'})`);
+              }
+              return;
+            }
+
             try {
               dataChannel.send(imageBuffer);
             } catch (error) {
-              console.error("Error sending screenshot binary through WebRTC DataChannel:", error.message);
+              console.error(`Error sending screenshot binary through WebRTC DataChannel for socket ${socketId}, tab ${tabId}:`, error.message);
               // WebRTC DataChannel error - skip this viewer
               // Viewer will need to reconnect to receive frames
             }

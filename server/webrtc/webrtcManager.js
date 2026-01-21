@@ -27,19 +27,22 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
       dataChannel.binaryType = 'arraybuffer';
 
       dataChannel.onopen = () => {
-        console.log(`WebRTC DataChannel opened for tab ${tabId}, socket ${socket.id}`);
+        console.log(`[WebRTC] DataChannel opened for tab ${tabId}, socket ${socket.id} (PC state: ${pc.connectionState})`);
       };
 
       dataChannel.onerror = (error) => {
-        console.error(`WebRTC DataChannel error for tab ${tabId}:`, error);
+        console.error(`[WebRTC] DataChannel error for tab ${tabId}, socket ${socket.id}:`, error);
       };
 
       dataChannel.onclose = () => {
-        console.log(`WebRTC DataChannel closed for tab ${tabId}`);
+        console.log(`[WebRTC] DataChannel closed for tab ${tabId}, socket ${socket.id} (PC state: ${pc.connectionState})`);
         if (browserInstance.webrtcDataChannels[socket.id]) {
           delete browserInstance.webrtcDataChannels[socket.id][tabId];
         }
       };
+
+      // Log initial state
+      console.log(`[WebRTC] DataChannel created for tab ${tabId}, socket ${socket.id} (initial state: ${dataChannel.readyState})`);
 
       browserInstance.webrtcConnections[socket.id][tabId] = pc;
       browserInstance.webrtcDataChannels[socket.id][tabId] = dataChannel;
@@ -55,8 +58,9 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
       };
 
       pc.onconnectionstatechange = () => {
-        console.log(`WebRTC connection state for tab ${tabId}:`, pc.connectionState);
+        console.log(`[WebRTC] Connection state changed for tab ${tabId}, socket ${socket.id}: ${pc.connectionState} (DC state: ${dataChannel.readyState})`);
         if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+          console.warn(`[WebRTC] Connection ${pc.connectionState} for tab ${tabId}, socket ${socket.id} - cleaning up`);
           cleanupWebRTC(socket.id, tabId, browserInstance);
         }
       };
@@ -64,6 +68,7 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
       // Create offer and send to client
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      console.log(`[WebRTC] Offer created and sent for tab ${tabId}, socket ${socket.id} (PC state: ${pc.connectionState}, DC state: ${dataChannel.readyState})`);
       socket.emit('webrtc_offer', {
         tabId,
         offer: pc.localDescription
