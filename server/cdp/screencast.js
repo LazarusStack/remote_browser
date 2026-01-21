@@ -1,6 +1,6 @@
 import { setupWebRTC } from '../webrtc/webrtcManager.js';
 
-export async function startCDPScreencast(socket, tabId, browserInstance, io) {
+export async function startCDPScreencast(socket, tabId, browserInstance) {
   const page = browserInstance.pages[tabId];
   if (!page || page.isClosed()) return;
 
@@ -41,35 +41,14 @@ export async function startCDPScreencast(socket, tabId, browserInstance, io) {
           const viewers = browserInstance.tabViewers[tabId] || new Set();
 
           viewers.forEach(socketId => {
-            // Try WebRTC DataChannel first (most efficient)
+            // Send binary data through WebRTC DataChannel
             const dataChannel = browserInstance.webrtcDataChannels[socketId]?.[tabId];
             if (dataChannel && dataChannel.readyState === 'open') {
               try {
-                // Send binary data through WebRTC DataChannel
                 dataChannel.send(imageBuffer);
               } catch (error) {
-                // Fallback to Socket.IO if WebRTC fails
-                const viewerSocket = io.sockets.sockets.get(socketId);
-                if (viewerSocket) {
-                  viewerSocket.emit("screenshot_binary", {
-                    tabId,
-                    image: imageBuffer
-                  });
-                }
-              }
-            } else {
-              // Fallback to Socket.IO binary
-              const viewerSocket = io.sockets.sockets.get(socketId);
-              if (viewerSocket) {
-                viewerSocket.emit("screenshot_binary", {
-                  tabId,
-                  image: imageBuffer
-                });
-                // Also send base64 for compatibility
-                // viewerSocket.emit("screenshot", {
-                //   tabId,
-                //   image: data
-                // });
+                // WebRTC DataChannel error - skip this viewer
+                // Viewer will need to reconnect to receive frames
               }
             }
           });

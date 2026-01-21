@@ -56,7 +56,7 @@ export function setupTabHandlers(socket, io) {
       });
 
       // Start CDP screencast streaming
-      await startCDPScreencast(socket, tabId, browserInstance, io);
+      await startCDPScreencast(socket, tabId, browserInstance);
 
       // Send immediate screenshot to the client that opened the tab
       setTimeout(async () => {
@@ -129,7 +129,7 @@ export function setupTabHandlers(socket, io) {
     await page.bringToFront();
 
     // Start CDP screencast for the new tab (adds socket to viewers)
-    await startCDPScreencast(socket, tabId, browserInstance, io);
+    await startCDPScreencast(socket, tabId, browserInstance);
 
     // Send immediate screenshot to this client
     setTimeout(async () => {
