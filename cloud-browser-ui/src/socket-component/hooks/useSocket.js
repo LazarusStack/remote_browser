@@ -181,31 +181,31 @@ export const useSocket = ({
     });
 
     // Fallback: handle base64 screenshot
-    socket.on("screenshot", ({ tabId, image }) => {
-      console.log("screenshot", tabId);
-      setActiveTab((currentActiveTab) => {
-        if (tabId === currentActiveTab) {
-          latestScreenshotRef.current = {
-            tabId,
-            image: `data:image/jpeg;base64,${image}`,
-            timestamp: Date.now()
-          };
+    // socket.on("screenshot", ({ tabId, image }) => {
+    //   console.log("screenshot", tabId);
+    //   setActiveTab((currentActiveTab) => {
+    //     if (tabId === currentActiveTab) {
+    //       latestScreenshotRef.current = {
+    //         tabId,
+    //         image: `data:image/jpeg;base64,${image}`,
+    //         timestamp: Date.now()
+    //       };
 
-          if (screenshotFrameRef.current) {
-            cancelAnimationFrame(screenshotFrameRef.current);
-          }
+    //       if (screenshotFrameRef.current) {
+    //         cancelAnimationFrame(screenshotFrameRef.current);
+    //       }
 
-          screenshotFrameRef.current = requestAnimationFrame(() => {
-            if (latestScreenshotRef.current && latestScreenshotRef.current.tabId === tabId) {
-              setScreenshot(latestScreenshotRef.current.image);
-              setIsLoading(false);
-              screenshotFrameRef.current = null;
-            }
-          });
-        }
-        return currentActiveTab;
-      });
-    });
+    //       screenshotFrameRef.current = requestAnimationFrame(() => {
+    //         if (latestScreenshotRef.current && latestScreenshotRef.current.tabId === tabId) {
+    //           setScreenshot(latestScreenshotRef.current.image);
+    //           setIsLoading(false);
+    //           screenshotFrameRef.current = null;
+    //         }
+    //       });
+    //     }
+    //     return currentActiveTab;
+    //   });
+    // });
 
     socket.on("url_changed", ({ tabId, url }) => {
       setActiveTab((currentActiveTab) => {

@@ -69,9 +69,10 @@ export function setupTabHandlers(socket, io) {
               fullPage: false,
               timeout: 5000
             });
-            socket.emit("screenshot", {
+            // Send binary Buffer directly for better performance
+            socket.emit("screenshot_binary", {
               tabId,
-              image: screenshot.toString('base64')
+              image: screenshot // Buffer is sent as binary
             });
           }
         } catch (error) {
@@ -141,9 +142,10 @@ export function setupTabHandlers(socket, io) {
             fullPage: false,
             timeout: 3000
           });
-          socket.emit("screenshot", {
+          // Send binary Buffer directly for better performance
+          socket.emit("screenshot_binary", {
             tabId,
-            image: screenshot.toString('base64')
+            image: screenshot // Buffer is sent as binary
           });
         }
       } catch (error) {
