@@ -9,7 +9,7 @@ export default function Main() {
   const [url, setUrl] = useState("");
   const [tabs, setTabs] = useState([]);
   const [activeTab, setActiveTab] = useState(null);
-  const [screenshot, setScreenshot] = useState(null);
+  const [videoStreams, setVideoStreams] = useState({}); // tabId -> MediaStream
   const [currentUrl, setCurrentUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(true);
@@ -19,15 +19,14 @@ export default function Main() {
   const [showCookieModal, setShowCookieModal] = useState(false);
   const [cookieJson, setCookieJson] = useState("");
   const [cookieStatus, setCookieStatus] = useState({ type: null, message: "" });
+  const [cursorPosition, setCursorPosition] = useState({ x: 0, y: 0, visible: false }); // Cursor from other users
   const viewportRef = useRef(null);
+  const videoRefs = useRef({}); // tabId -> video element ref
   const scaleRef = useRef(1);
   const socketRef = useRef(null);
-  const latestScreenshotRef = useRef(null);
-  const screenshotFrameRef = useRef(null);
-  const dataChannelsRef = useRef({}); // tabId -> DataChannel
   const peerConnectionsRef = useRef({}); // tabId -> RTCPeerConnection
 
-  // Setup WebRTC for a tab
+  // Setup WebRTC for a tab - receives video stream from server
   const setupWebRTCForTab = (tabId) => {
     if (peerConnectionsRef.current[tabId]) {
       return; // Already set up
@@ -38,67 +37,26 @@ export default function Main() {
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
       });
 
-      // Handle incoming data channel (server creates it)
-      pc.ondatachannel = (event) => {
-        const dataChannel = event.channel;
-        dataChannel.binaryType = 'arraybuffer';
-
-        dataChannel.onopen = () => {
-          console.log(`WebRTC DataChannel opened for tab ${tabId}`);
-          dataChannelsRef.current[tabId] = dataChannel;
-        };
-
-        dataChannel.onmessage = (event) => {
-          // Receive binary screenshot data
-          if (event.data instanceof ArrayBuffer) {
-            // Use Blob URL for better performance (avoids base64 conversion overhead)
-            // This is critical - the previous base64 conversion was blocking the main thread
-            const blob = new Blob([event.data], { type: 'image/jpeg' });
-            const dataUrl = URL.createObjectURL(blob);
-
-            setActiveTab((currentActiveTab) => {
-              if (tabId === currentActiveTab) {
-                // Clean up old blob URL to prevent memory leaks
-                if (latestScreenshotRef.current?.blobUrl) {
-                  URL.revokeObjectURL(latestScreenshotRef.current.blobUrl);
-                }
-
-                latestScreenshotRef.current = {
-                  tabId,
-                  image: dataUrl,
-                  blobUrl: dataUrl, // Store for cleanup
-                  timestamp: Date.now()
-                };
-
-                if (screenshotFrameRef.current) {
-                  cancelAnimationFrame(screenshotFrameRef.current);
-                }
-
-                screenshotFrameRef.current = requestAnimationFrame(() => {
-                  if (latestScreenshotRef.current && latestScreenshotRef.current.tabId === tabId) {
-                    setScreenshot(latestScreenshotRef.current.image);
-                    setIsLoading(false);
-                    screenshotFrameRef.current = null;
-                  }
-                });
-              } else {
-                // If not active tab, revoking immediately would be wrong if we wanted to cache it, 
-                // but for now we just drop it to save memory.
-                URL.revokeObjectURL(dataUrl);
-              }
-              return currentActiveTab;
+      // Handle incoming video tracks
+      pc.ontrack = (event) => {
+        console.log(`Received video track for tab ${tabId}`);
+        const stream = event.streams[0];
+        if (stream) {
+          setVideoStreams(prev => ({
+            ...prev,
+            [tabId]: stream
+          }));
+          setIsLoading(false);
+          
+          // Attach stream to video element
+          const videoElement = videoRefs.current[tabId];
+          if (videoElement) {
+            videoElement.srcObject = stream;
+            videoElement.play().catch(err => {
+              console.error("Error playing video:", err);
             });
           }
-        };
-
-        dataChannel.onerror = (error) => {
-          console.error(`WebRTC DataChannel error for tab ${tabId}:`, error);
-        };
-
-        dataChannel.onclose = () => {
-          console.log(`WebRTC DataChannel closed for tab ${tabId}`);
-          delete dataChannelsRef.current[tabId];
-        };
+        }
       };
 
       // Handle ICE candidates
@@ -129,7 +87,24 @@ export default function Main() {
       peerConnectionsRef.current[tabId].close();
       delete peerConnectionsRef.current[tabId];
     }
-    delete dataChannelsRef.current[tabId];
+    
+    // Stop video stream
+    const stream = videoStreams[tabId];
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+    }
+    
+    setVideoStreams(prev => {
+      const updated = { ...prev };
+      delete updated[tabId];
+      return updated;
+    });
+    
+    // Clear video element
+    const videoElement = videoRefs.current[tabId];
+    if (videoElement) {
+      videoElement.srcObject = null;
+    }
   };
 
   // Initialize socket connection once
@@ -185,9 +160,9 @@ export default function Main() {
     socket.on("tab_opened", ({ tabId, url }) => {
       setActiveTab(tabId);
       setCurrentUrl(url);
+      setIsLoading(true);
       socket.emit("list_tabs");
-      // Setup WebRTC for the new tab
-      setupWebRTCForTab(tabId);
+      // Setup WebRTC for the new tab - will be triggered by webrtc_offer
     });
 
     socket.on("tab_closed", ({ tabId }) => {
@@ -204,12 +179,29 @@ export default function Main() {
 
     socket.on("tab_switched", ({ tabId }) => {
       setActiveTab(tabId);
+      setIsLoading(true);
       const tab = tabs.find(t => t.tabId === tabId);
       if (tab) {
         setUrl(tab.url);
+        setCurrentUrl(tab.url);
       }
-      // Setup WebRTC for the switched tab
-      setupWebRTCForTab(tabId);
+      // Setup WebRTC for the switched tab - will be triggered by webrtc_offer or already exists
+      if (!peerConnectionsRef.current[tabId]) {
+        setupWebRTCForTab(tabId);
+      } else {
+        // If connection exists, check if we have a video stream
+        const stream = videoStreams[tabId];
+        if (stream) {
+          const videoElement = videoRefs.current[tabId];
+          if (videoElement) {
+            videoElement.srcObject = stream;
+            videoElement.play().catch(err => {
+              console.error("Error playing video:", err);
+            });
+          }
+          setIsLoading(false);
+        }
+      }
     });
 
     // Handle WebRTC offer from server
@@ -232,6 +224,7 @@ export default function Main() {
         }
       } catch (error) {
         console.error("Error handling WebRTC offer:", error);
+        setIsLoading(false);
       }
     });
 
@@ -247,69 +240,20 @@ export default function Main() {
       }
     });
 
-    // Handle binary screenshot data (more efficient)
-    socket.on("screenshot_binary", ({ tabId, image }) => {
-      setActiveTab((currentActiveTab) => {
-        if (tabId === currentActiveTab && image) {
-          // Convert binary to base64 data URL
-          const base64 = btoa(
-            new Uint8Array(image).reduce((data, byte) => data + String.fromCharCode(byte), '')
-          );
-          const dataUrl = `data:image/jpeg;base64,${base64}`;
-
-          // UDP-like behavior: only keep the latest frame
-          latestScreenshotRef.current = {
-            tabId,
-            image: dataUrl,
-            timestamp: Date.now()
-          };
-
-          // Cancel any pending frame update
-          if (screenshotFrameRef.current) {
-            cancelAnimationFrame(screenshotFrameRef.current);
-          }
-
-          // Schedule update for next frame (only latest will be rendered)
-          screenshotFrameRef.current = requestAnimationFrame(() => {
-            if (latestScreenshotRef.current && latestScreenshotRef.current.tabId === tabId) {
-              setScreenshot(latestScreenshotRef.current.image);
-              setIsLoading(false);
-              screenshotFrameRef.current = null;
+    // Handle cursor movement from other users
+    socket.on("cursor_move", ({ tabId, x, y, from }) => {
+      if (tabId === activeTab && from !== socket.id) {
+        setCursorPosition({ x, y, visible: true });
+        // Hide cursor after 2 seconds if no updates
+        setTimeout(() => {
+          setCursorPosition(prev => {
+            if (prev.x === x && prev.y === y) {
+              return { ...prev, visible: false };
             }
+            return prev;
           });
-        }
-        return currentActiveTab;
-      });
-    });
-
-    // Fallback: handle base64 screenshot (for compatibility)
-    socket.on("screenshot", ({ tabId, image }) => {
-      console.log("screenshot", tabId);
-      setActiveTab((currentActiveTab) => {
-        if (tabId === currentActiveTab) {
-          // UDP-like behavior: only keep the latest frame
-          latestScreenshotRef.current = {
-            tabId,
-            image: `data:image/jpeg;base64,${image}`,
-            timestamp: Date.now()
-          };
-
-          // Cancel any pending frame update
-          if (screenshotFrameRef.current) {
-            cancelAnimationFrame(screenshotFrameRef.current);
-          }
-
-          // Schedule update for next frame (only latest will be rendered)
-          screenshotFrameRef.current = requestAnimationFrame(() => {
-            if (latestScreenshotRef.current && latestScreenshotRef.current.tabId === tabId) {
-              setScreenshot(latestScreenshotRef.current.image);
-              setIsLoading(false);
-              screenshotFrameRef.current = null;
-            }
-          });
-        }
-        return currentActiveTab;
-      });
+        }, 2000);
+      }
     });
 
     socket.on("url_changed", ({ tabId, url }) => {
@@ -328,14 +272,6 @@ export default function Main() {
     return () => {
       socket.disconnect();
       socketRef.current = null;
-      // Cleanup animation frame
-      if (screenshotFrameRef.current) {
-        cancelAnimationFrame(screenshotFrameRef.current);
-      }
-      // Cleanup blob URLs
-      if (latestScreenshotRef.current?.blobUrl) {
-        URL.revokeObjectURL(latestScreenshotRef.current.blobUrl);
-      }
       // Cleanup all WebRTC connections
       Object.keys(peerConnectionsRef.current).forEach(tabId => {
         cleanupWebRTCForTab(tabId);
@@ -411,33 +347,28 @@ export default function Main() {
 
   // Update currentUrl when activeTab changes
   useEffect(() => {
-    // Cancel any pending screenshot updates when tab changes
-    if (screenshotFrameRef.current) {
-      cancelAnimationFrame(screenshotFrameRef.current);
-      screenshotFrameRef.current = null;
-    }
-
-    // Only clear screenshot if switching to a different tab (not just updating)
-    // Don't clear if we're just updating tabs list
-    const prevTab = latestScreenshotRef.current?.tabId;
-    if (prevTab && prevTab !== activeTab) {
-      // Clean up old blob URL when switching tabs
-      if (latestScreenshotRef.current?.blobUrl) {
-        URL.revokeObjectURL(latestScreenshotRef.current.blobUrl);
-      }
-      latestScreenshotRef.current = null;
-      // Keep screenshot visible until new one arrives (don't clear immediately)
-    }
-
     if (activeTab) {
       const tab = tabs.find(t => t.tabId === activeTab);
-      if (tab) setCurrentUrl(tab.url);
+      if (tab) {
+        setCurrentUrl(tab.url);
+      }
     } else {
       setCurrentUrl("");
-      setScreenshot(null);
-      latestScreenshotRef.current = null;
     }
   }, [activeTab, tabs]);
+
+  // Ensure video element plays when stream becomes available
+  useEffect(() => {
+    if (activeTab && videoStreams[activeTab]) {
+      const videoElement = videoRefs.current[activeTab];
+      if (videoElement) {
+        videoElement.srcObject = videoStreams[activeTab];
+        videoElement.play().catch(err => {
+          console.error("Error playing video:", err);
+        });
+      }
+    }
+  }, [activeTab, videoStreams]);
 
   // Normalize URL - add protocol if missing, or convert to Google search
   const normalizeUrl = (input) => {
@@ -498,7 +429,7 @@ export default function Main() {
     if (!socketRef.current) return;
     setIsLoading(true);
     // Don't set activeTab here - let the server's tab_switched event handle it
-    // This ensures the screenshot arrives after activeTab is set
+    // This ensures the video stream is set up after activeTab is set
     socketRef.current.emit("switch_tab", { tabId });
   };
 
@@ -700,29 +631,27 @@ export default function Main() {
 
   // Calculate scale to fill viewport
   useEffect(() => {
-    if (viewportRef.current && screenshot) {
+    if (viewportRef.current && activeTab) {
       const container = viewportRef.current.parentElement;
       if (container) {
         const availableWidth = container.clientWidth;
         const availableHeight = container.clientHeight;
-        const img = new Image();
-        img.onload = () => {
-          const scale = Math.min(
-            availableWidth / img.width,
-            availableHeight / img.height
-          );
-          scaleRef.current = scale;
-          // Force re-render to apply scale
-          if (viewportRef.current) {
-            viewportRef.current.style.transform = `scale(${scale})`;
-            viewportRef.current.style.width = `${img.width}px`;
-            viewportRef.current.style.height = `${img.height}px`;
-          }
-        };
-        img.src = screenshot;
+        const viewportWidth = 1920;
+        const viewportHeight = 1080;
+        const scale = Math.min(
+          availableWidth / viewportWidth,
+          availableHeight / viewportHeight
+        );
+        scaleRef.current = scale;
+        // Force re-render to apply scale
+        if (viewportRef.current) {
+          viewportRef.current.style.transform = `scale(${scale})`;
+          viewportRef.current.style.width = `${viewportWidth}px`;
+          viewportRef.current.style.height = `${viewportHeight}px`;
+        }
       }
     }
-  }, [screenshot]);
+  }, [activeTab]);
 
   // Focus viewport when active tab changes
   useEffect(() => {
@@ -970,7 +899,7 @@ export default function Main() {
           <div className="w-full h-full flex items-center justify-center relative">
             <div
               ref={viewportRef}
-              className="bg-white overflow-visible cursor-pointer relative focus:outline-none"
+              className="bg-black overflow-visible cursor-pointer relative focus:outline-none"
               style={{
                 transform: `scale(${scaleRef.current})`,
                 transformOrigin: "center center"
@@ -991,20 +920,47 @@ export default function Main() {
                 }
               }}
             >
-              {isLoading && !screenshot ? (
+              {isLoading && !videoStreams[activeTab] ? (
                 <div className="w-[1920px] h-[1080px] flex items-center justify-center bg-gray-100">
-                  <div className="text-gray-500">Loading...</div>
+                  <div className="text-gray-500">Connecting...</div>
                 </div>
-              ) : screenshot ? (
-                <img
-                  src={screenshot}
-                  alt="Browser viewport"
-                  className="block"
-                  draggable={false}
-                />
+              ) : videoStreams[activeTab] ? (
+                <div className="relative w-[1920px] h-[1080px]">
+                  <video
+                    ref={(el) => {
+                      if (el) {
+                        videoRefs.current[activeTab] = el;
+                        el.srcObject = videoStreams[activeTab];
+                        el.play().catch(err => {
+                          console.error("Error playing video:", err);
+                        });
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-full h-full object-contain bg-black"
+                    style={{ transform: 'scaleX(1)' }}
+                  />
+                  {/* Cursor indicator from other users */}
+                  {cursorPosition.visible && (
+                    <div
+                      className="absolute pointer-events-none z-10"
+                      style={{
+                        left: `${cursorPosition.x}px`,
+                        top: `${cursorPosition.y}px`,
+                        transform: 'translate(-50%, -50%)'
+                      }}
+                    >
+                      <div className="w-4 h-4 border-2 border-blue-500 rounded-full bg-blue-500/30">
+                        <div className="absolute top-0 left-0 w-2 h-2 bg-blue-500 rounded-full"></div>
+                      </div>
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div className="w-[1920px] h-[1080px] flex items-center justify-center bg-gray-100">
-                  <div className="text-gray-500">No screenshot available</div>
+                  <div className="text-gray-500">Waiting for video stream...</div>
                 </div>
               )}
             </div>

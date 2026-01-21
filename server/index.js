@@ -45,11 +45,9 @@ function createBrowserInstance() {
     pages: {}, // tabId -> page
     tabCounter: 0,
     activeTabs: [], // tabId
-    cdpSessions: {}, // tabId -> CDP session
-    screencastActive: {}, // tabId -> boolean
     tabViewers: {}, // tabId -> Set of socketIds viewing this tab
     webrtcConnections: {}, // socketId -> { tabId -> RTCPeerConnection }
-    webrtcDataChannels: {} // socketId -> { tabId -> RTCDataChannel }
+    cursorState: {}, // tabId -> { x, y, socketId }
   };
 }
 
@@ -73,12 +71,18 @@ async function initBrowser(browserId) {
   const browser = await chromium.launch({
     headless: true,
     args: [
-      '--disable-gpu',
-      '--disable-dev-shm-usage',
-      '--disable-software-rasterizer',
-      '--disable-extensions',
       '--no-sandbox',
-      '--disable-setuid-sandbox'
+      '--disable-setuid-sandbox',
+    
+      '--enable-webrtc-pipewire-capturer',
+      '--use-fake-ui-for-media-stream',
+      '--allow-http-screen-capture',
+      '--auto-select-desktop-capture-source=tab',
+    
+      // Performance
+      '--disable-dev-shm-usage',
+      '--disable-background-timer-throttling',
+      '--disable-renderer-backgrounding'
     ]
   });
 
@@ -104,80 +108,36 @@ function getBrowserByCode(code) {
   return browser ? browser.id : null;
 }
 
-// Setup WebRTC connection for a client viewing a tab
+// Setup WebRTC connection for a client viewing a tab (signaling only)
 async function setupWebRTC(socket, tabId, browserInstance) {
-  try {
-    if (!browserInstance.webrtcConnections[socket.id]) {
-      browserInstance.webrtcConnections[socket.id] = {};
-    }
-    if (!browserInstance.webrtcDataChannels[socket.id]) {
-      browserInstance.webrtcDataChannels[socket.id] = {};
-    }
-
-    // Create or reuse peer connection for this tab
-    let pc = browserInstance.webrtcConnections[socket.id][tabId];
-    if (!pc) {
-      pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-      });
-
-      // Create data channel for screenshot data
-      const dataChannel = pc.createDataChannel('screenshots', {
-        ordered: false, // UDP-like behavior
-        maxRetransmits: 0 // Don't retransmit, drop old frames
-      });
-
-      dataChannel.binaryType = 'arraybuffer';
-
-      dataChannel.onopen = () => {
-        console.log(`WebRTC DataChannel opened for tab ${tabId}, socket ${socket.id}`);
-      };
-
-      dataChannel.onerror = (error) => {
-        console.error(`WebRTC DataChannel error for tab ${tabId}:`, error);
-      };
-
-      dataChannel.onclose = () => {
-        console.log(`WebRTC DataChannel closed for tab ${tabId}`);
-        if (browserInstance.webrtcDataChannels[socket.id]) {
-          delete browserInstance.webrtcDataChannels[socket.id][tabId];
-        }
-      };
-
-      browserInstance.webrtcConnections[socket.id][tabId] = pc;
-      browserInstance.webrtcDataChannels[socket.id][tabId] = dataChannel;
-
-      // Handle ICE candidates
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          socket.emit('webrtc_ice_candidate', {
-            tabId,
-            candidate: event.candidate
-          });
-        }
-      };
-
-      pc.onconnectionstatechange = () => {
-        console.log(`WebRTC connection state for tab ${tabId}:`, pc.connectionState);
-        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-          cleanupWebRTC(socket.id, tabId, browserInstance);
-        }
-      };
-
-      // Create offer and send to client
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit('webrtc_offer', {
-        tabId,
-        offer: pc.localDescription
-      });
-    }
-
-    return browserInstance.webrtcDataChannels[socket.id][tabId];
-  } catch (error) {
-    console.error("Error setting up WebRTC:", error);
-    return null;
+  if (!browserInstance.webrtcConnections[socket.id]) {
+    browserInstance.webrtcConnections[socket.id] = {};
   }
+
+  let pc = browserInstance.webrtcConnections[socket.id][tabId];
+  if (pc) return pc;
+
+  pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  });
+
+  browserInstance.webrtcConnections[socket.id][tabId] = pc;
+
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      socket.emit('webrtc_ice_candidate', { tabId, candidate: event.candidate });
+    }
+  };
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  socket.emit('webrtc_offer', {
+    tabId,
+    offer: pc.localDescription
+  });
+
+  return pc;
 }
 
 function cleanupWebRTC(socketId, tabId, browserInstance) {
@@ -185,132 +145,8 @@ function cleanupWebRTC(socketId, tabId, browserInstance) {
     browserInstance.webrtcConnections[socketId][tabId].close();
     delete browserInstance.webrtcConnections[socketId][tabId];
   }
-  if (browserInstance.webrtcDataChannels[socketId] && browserInstance.webrtcDataChannels[socketId][tabId]) {
-    delete browserInstance.webrtcDataChannels[socketId][tabId];
-  }
 }
 
-async function startCDPScreencast(socket, tabId, browserInstance) {
-  const page = browserInstance.pages[tabId];
-  if (!page || page.isClosed()) return;
-
-  // Add this socket to the viewers of this tab
-  if (!browserInstance.tabViewers[tabId]) {
-    browserInstance.tabViewers[tabId] = new Set();
-  }
-  browserInstance.tabViewers[tabId].add(socket.id);
-
-  // Setup WebRTC for this client/tab
-  await setupWebRTC(socket, tabId, browserInstance);
-
-  // Stop existing screencast for this tab if any
-  if (browserInstance.screencastActive[tabId]) {
-    await stopCDPScreencast(tabId, browserInstance);
-  }
-
-  try {
-    // Get or create CDP session for this page
-    let cdpSession = browserInstance.cdpSessions[tabId];
-    if (!cdpSession) {
-      // Create CDP session from the page
-      cdpSession = await page.context().newCDPSession(page);
-      browserInstance.cdpSessions[tabId] = cdpSession;
-
-      // Listen for screencast frames
-      cdpSession.on('Page.screencastFrame', async (event) => {
-        if (!browserInstance.screencastActive[tabId] || !browserInstance.pages[tabId] || browserInstance.pages[tabId].isClosed()) {
-          return;
-        }
-
-        try {
-          const { data, sessionId } = event;
-
-          // Broadcast frame to ALL clients viewing this tab
-          // Convert base64 to Buffer for efficient binary transfer
-          const imageBuffer = Buffer.from(data, 'base64');
-          const viewers = browserInstance.tabViewers[tabId] || new Set();
-
-          viewers.forEach(socketId => {
-            // Try WebRTC DataChannel first (most efficient)
-            const dataChannel = browserInstance.webrtcDataChannels[socketId]?.[tabId];
-            if (dataChannel && dataChannel.readyState === 'open') {
-              try {
-                // Send binary data through WebRTC DataChannel
-                dataChannel.send(imageBuffer);
-              } catch (error) {
-                // Fallback to Socket.IO if WebRTC fails
-                const viewerSocket = io.sockets.sockets.get(socketId);
-                if (viewerSocket) {
-                  viewerSocket.emit("screenshot_binary", {
-                    tabId,
-                    image: imageBuffer
-                  });
-                }
-              }
-            } else {
-              // Fallback to Socket.IO binary
-              const viewerSocket = io.sockets.sockets.get(socketId);
-              if (viewerSocket) {
-                viewerSocket.emit("screenshot_binary", {
-                  tabId,
-                  image: imageBuffer
-                });
-                // Also send base64 for compatibility
-                viewerSocket.emit("screenshot", {
-                  tabId,
-                  image: data
-                });
-              }
-            }
-          });
-
-          // Notify CDP that we've processed the frame
-          await cdpSession.send('Page.screencastFrameAck', { sessionId }).catch(() => {
-            // Ignore errors if session is closed
-          });
-        } catch (error) {
-          // Silently handle errors - page might be closing
-          if (!error.message.includes('closed') && !error.message.includes('Target closed')) {
-            console.error("Error processing screencast frame:", error.message);
-          }
-        }
-      });
-
-      // Handle CDP session errors
-      cdpSession.on('error', (error) => {
-        console.error("CDP session error:", error.message);
-        delete browserInstance.cdpSessions[tabId];
-        browserInstance.screencastActive[tabId] = false;
-      });
-    }
-
-    // Start screencast with optimized settings
-    await cdpSession.send('Page.startScreencast', {
-      format: 'jpeg',
-      quality: 80, // Slightly reduced from 85 for bandwidth savings
-      maxWidth: 1920,
-      maxHeight: 1080,
-      everyNthFrame: 1 // Send every frame for smooth experience (WebRTC handles flow control)
-    });
-
-    browserInstance.screencastActive[tabId] = true;
-  } catch (error) {
-    console.error("Error starting CDP screencast:", error.message);
-    browserInstance.screencastActive[tabId] = false;
-  }
-}
-
-async function stopCDPScreencast(tabId, browserInstance) {
-  try {
-    const cdpSession = browserInstance.cdpSessions[tabId];
-    if (cdpSession && browserInstance.screencastActive[tabId]) {
-      await cdpSession.send('Page.stopScreencast');
-      browserInstance.screencastActive[tabId] = false;
-    }
-  } catch (error) {
-    console.error("Error stopping CDP screencast:", error.message);
-  }
-}
 
 // Helper function to get browser instance for a socket
 function getBrowserInstance(socket) {
@@ -360,6 +196,39 @@ io.on("connection", async (socket) => {
     }
 
     const page = await browserInstance.context.newPage();
+    await page.addInitScript(() => {
+      window.__startWebRTC = async (tabId) => {
+        const pc = new RTCPeerConnection({
+          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: 60 },
+          audio: false
+        });
+
+        stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+        pc.onicecandidate = (e) => {
+          if (e.candidate) {
+            window.socket.emit('webrtc_ice_candidate', {
+              tabId,
+              candidate: e.candidate
+            });
+          }
+        };
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        window.socket.emit('webrtc_offer', {
+          tabId,
+          offer: pc.localDescription
+        });
+
+        window.__pc = pc;
+      };
+    });
     await page.goto(url || "https://google.com");
     const tabId = `tab_${++browserInstance.tabCounter}`;
     browserInstance.pages[tabId] = page;
@@ -378,29 +247,11 @@ io.on("connection", async (socket) => {
       }
     });
 
-    // Start CDP screencast streaming
-    await startCDPScreencast(socket, tabId, browserInstance);
+    await page.evaluate((tabId) => {
+      window.__startWebRTC(tabId);
+    }, tabId);
 
-    // Send immediate screenshot to the client that opened the tab
-    setTimeout(async () => {
-      try {
-        const currentPage = browserInstance.pages[tabId];
-        if (currentPage && !currentPage.isClosed()) {
-          const screenshot = await currentPage.screenshot({
-            type: 'jpeg',
-            quality: 85,
-            fullPage: false,
-            timeout: 5000
-          });
-          socket.emit("screenshot", {
-            tabId,
-            image: screenshot.toString('base64')
-          });
-        }
-      } catch (error) {
-        // Screenshot might fail, that's okay
-      }
-    }, 100);
+    await setupWebRTC(socket, tabId, browserInstance);
 
     // Broadcast to all clients that a new tab was opened
     io.emit("tab_opened", { tabId, url: page.url() });
@@ -444,31 +295,18 @@ io.on("connection", async (socket) => {
 
     await page.bringToFront();
 
-    // Start CDP screencast for the new tab (adds socket to viewers)
-    await startCDPScreencast(socket, tabId, browserInstance);
-
-    // Send immediate screenshot to this client
-    setTimeout(async () => {
-      try {
-        const currentPage = browserInstance.pages[tabId];
-        if (currentPage && !currentPage.isClosed()) {
-          const screenshot = await currentPage.screenshot({
-            type: 'jpeg',
-            quality: 85,
-            fullPage: false,
-            timeout: 3000
-          });
-          socket.emit("screenshot", {
-            tabId,
-            image: screenshot.toString('base64')
-          });
-        }
-      } catch (error) {
-        // Screenshot might fail, that's okay
-      }
-    }, 50);
+    await setupWebRTC(socket, tabId, browserInstance);
 
     socket.emit("tab_switched", { tabId });
+    // Send last known cursor position for this tab (if any)
+    if (browserInstance.cursorState[tabId]) {
+      socket.emit("cursor_move", {
+        tabId,
+        x: browserInstance.cursorState[tabId].x,
+        y: browserInstance.cursorState[tabId].y,
+        from: browserInstance.cursorState[tabId].socketId
+      });
+    }
   });
 
   socket.on("close_tab", async ({ tabId }) => {
@@ -486,16 +324,6 @@ io.on("connection", async (socket) => {
       browserInstance.tabViewers[tabId].delete(socket.id);
       if (browserInstance.tabViewers[tabId].size === 0) {
         delete browserInstance.tabViewers[tabId];
-        // Stop screencast if no one is viewing
-        await stopCDPScreencast(tabId, browserInstance);
-        if (browserInstance.cdpSessions[tabId]) {
-          try {
-            await browserInstance.cdpSessions[tabId].detach();
-          } catch (error) {
-            // Session might already be closed
-          }
-          delete browserInstance.cdpSessions[tabId];
-        }
       }
     }
 
@@ -504,11 +332,13 @@ io.on("connection", async (socket) => {
 
     await page.close();
     delete browserInstance.pages[tabId];
-    delete browserInstance.screencastActive[tabId];
 
     if (browserInstance.activeTabs.includes(tabId)) {
       browserInstance.activeTabs = browserInstance.activeTabs.filter(id => id !== tabId);
     }
+
+    // Clear cursor state
+    delete browserInstance.cursorState[tabId];
 
     // Broadcast to all clients that this tab was closed
     io.emit("tab_closed", { tabId });
@@ -529,7 +359,7 @@ io.on("connection", async (socket) => {
     }
   });
 
-  // Mouse move handler
+  // Mouse move handler (with cursor broadcast)
   socket.on("mouse_move", async ({ tabId, x, y }) => {
     const browserInstance = getBrowserInstance(socket);
     if (!browserInstance) return;
@@ -539,6 +369,31 @@ io.on("connection", async (socket) => {
 
     try {
       await page.mouse.move(x, y);
+
+      // Store cursor state
+      browserInstance.cursorState[tabId] = {
+        x,
+        y,
+        socketId: socket.id
+      };
+
+      // Broadcast cursor position to other viewers of this tab
+      const viewers = browserInstance.tabViewers[tabId];
+      if (viewers) {
+        viewers.forEach(viewerSocketId => {
+          if (viewerSocketId !== socket.id) {
+            const viewerSocket = io.sockets.sockets.get(viewerSocketId);
+            if (viewerSocket) {
+              viewerSocket.emit("cursor_move", {
+                tabId,
+                x,
+                y,
+                from: socket.id
+              });
+            }
+          }
+        });
+      }
     } catch (error) {
       console.error("Mouse move error:", error);
     }
@@ -677,14 +532,11 @@ io.on("connection", async (socket) => {
     const browserInstance = getBrowserInstance(socket);
     if (!browserInstance) return;
 
-    try {
-      const pc = browserInstance.webrtcConnections[socket.id]?.[tabId];
-      if (pc && answer) {
-        await pc.setRemoteDescription(new RTCSessionDescription(answer));
-        console.log(`WebRTC answer received for tab ${tabId}`);
-      }
-    } catch (error) {
-      console.error("Error handling WebRTC answer:", error);
+    const page = browserInstance.pages[tabId];
+    if (page && answer) {
+      await page.evaluate((answer) => {
+        window.__pc && window.__pc.setRemoteDescription(answer);
+      }, answer);
     }
   });
 
@@ -692,13 +544,11 @@ io.on("connection", async (socket) => {
     const browserInstance = getBrowserInstance(socket);
     if (!browserInstance) return;
 
-    try {
-      const pc = browserInstance.webrtcConnections[socket.id]?.[tabId];
-      if (pc && candidate) {
-        await pc.addIceCandidate(candidate);
-      }
-    } catch (error) {
-      console.error("Error adding ICE candidate:", error);
+    const page = browserInstance.pages[tabId];
+    if (page && candidate) {
+      await page.evaluate((candidate) => {
+        window.__pc && window.__pc.addIceCandidate(candidate);
+      }, candidate);
     }
   });
 
@@ -712,9 +562,14 @@ io.on("connection", async (socket) => {
           browserInstance.tabViewers[tabId].delete(socket.id);
           if (browserInstance.tabViewers[tabId].size === 0) {
             delete browserInstance.tabViewers[tabId];
-            // Stop screencast if no one is viewing
-            stopCDPScreencast(tabId, browserInstance).catch(() => { });
           }
+        }
+      });
+
+      // Remove cursor ownership for disconnected socket
+      Object.keys(browserInstance.cursorState || {}).forEach(tabId => {
+        if (browserInstance.cursorState[tabId]?.socketId === socket.id) {
+          delete browserInstance.cursorState[tabId];
         }
       });
 
@@ -724,9 +579,6 @@ io.on("connection", async (socket) => {
           cleanupWebRTC(socket.id, tabId, browserInstance);
         });
         delete browserInstance.webrtcConnections[socket.id];
-      }
-      if (browserInstance.webrtcDataChannels[socket.id]) {
-        delete browserInstance.webrtcDataChannels[socket.id];
       }
     }
 
