@@ -16,6 +16,9 @@ export default function Main() {
   const [offsetX, setOffsetX] = useState(0);
   const [offsetY, setOffsetY] = useState(0);
   const [showOffsetControls, setShowOffsetControls] = useState(false);
+  const [showCookieModal, setShowCookieModal] = useState(false);
+  const [cookieJson, setCookieJson] = useState("");
+  const [cookieStatus, setCookieStatus] = useState({ type: null, message: "" });
   const viewportRef = useRef(null);
   const scaleRef = useRef(1);
   const socketRef = useRef(null);
@@ -145,6 +148,19 @@ export default function Main() {
       setIsAuthenticated(false);
       setBrowserInfo(null);
       setIsLoading(false);
+    });
+
+    socket.on("cookies_set", ({ success, count, error }) => {
+      if (success) {
+        setCookieStatus({ type: "success", message: `Successfully imported ${count} cookies!` });
+        setTimeout(() => {
+          setCookieStatus({ type: null, message: "" });
+          setShowCookieModal(false);
+          setCookieJson("");
+        }, 2000);
+      } else {
+        setCookieStatus({ type: "error", message: error || "Failed to import cookies" });
+      }
     });
 
     socket.on("disconnect", () => {
@@ -703,6 +719,23 @@ export default function Main() {
     socketRef.current.emit("connect_browser", { code: browserCode.trim() });
   };
 
+  const handleImportCookies = () => {
+    if (!cookieJson.trim() || !socketRef.current) return;
+    
+    try {
+      const cookies = JSON.parse(cookieJson);
+      if (!Array.isArray(cookies)) {
+        setCookieStatus({ type: "error", message: "Cookies must be an array" });
+        return;
+      }
+      
+      setCookieStatus({ type: null, message: "" });
+      socketRef.current.emit("set_cookies", { cookies });
+    } catch (error) {
+      setCookieStatus({ type: "error", message: `Invalid JSON: ${error.message}` });
+    }
+  };
+
   // Show authentication screen if not authenticated
   if (!isAuthenticated) {
     return (
@@ -886,6 +919,15 @@ export default function Main() {
             </button>
           </div>
         )}
+        {/* Cookie Import Button */}
+        <button
+          onClick={() => setShowCookieModal(true)}
+          className="px-3 py-2 bg-gray-800/90 hover:bg-gray-700 rounded text-sm backdrop-blur-sm"
+          title="Import cookies"
+        >
+          🍪
+        </button>
+        
         {/* Offset Toggle Button */}
         <button
           onClick={() => setShowOffsetControls(!showOffsetControls)}
@@ -958,6 +1000,77 @@ export default function Main() {
           </div>
         )}
       </div>
+
+      {/* Cookie Import Modal */}
+      {showCookieModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-gray-800 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col border border-gray-700">
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+              <h2 className="text-xl font-bold text-white">Import Cookies</h2>
+              <button
+                onClick={() => {
+                  setShowCookieModal(false);
+                  setCookieJson("");
+                  setCookieStatus({ type: null, message: "" });
+                }}
+                className="text-gray-400 hover:text-white text-2xl leading-none"
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-hidden flex flex-col p-6">
+              <p className="text-sm text-gray-400 mb-4">
+                Paste your cookies JSON array here. Cookies will be applied to all tabs in this browser instance.
+              </p>
+              
+              <textarea
+                value={cookieJson}
+                onChange={(e) => {
+                  setCookieJson(e.target.value);
+                  setCookieStatus({ type: null, message: "" });
+                }}
+                placeholder='[{"domain":".youtube.com","name":"LOGIN_INFO","value":"...","path":"/","secure":true,...}]'
+                className="flex-1 w-full px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-white font-mono text-sm resize-none focus:outline-none focus:border-blue-500"
+              />
+
+              {cookieStatus.type && (
+                <div
+                  className={`mt-4 p-3 rounded-lg text-sm ${
+                    cookieStatus.type === "success"
+                      ? "bg-green-900/30 border border-green-700 text-green-400"
+                      : "bg-red-900/30 border border-red-700 text-red-400"
+                  }`}
+                >
+                  {cookieStatus.message}
+                </div>
+              )}
+
+              <div className="mt-4 flex gap-3">
+                <button
+                  onClick={handleImportCookies}
+                  className="flex-1 px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors"
+                  disabled={!cookieJson.trim()}
+                >
+                  Import Cookies
+                </button>
+                <button
+                  onClick={() => {
+                    setShowCookieModal(false);
+                    setCookieJson("");
+                    setCookieStatus({ type: null, message: "" });
+                  }}
+                  className="px-6 py-3 bg-gray-700 hover:bg-gray-600 rounded-lg font-medium transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
