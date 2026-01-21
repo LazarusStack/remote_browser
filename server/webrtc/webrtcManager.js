@@ -16,17 +16,19 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
     if (!pc) {
       // Use STUN and TURN servers for better connectivity
       // TURN server is needed when direct connection fails (NAT/firewall issues)
+      const turnUrl = process.env.TURN_URL || 'turn:free.expressturn.com:3478';
+      const turnUsername = process.env.TURN_USERNAME || '000000002084391365';
+      const turnCredential = process.env.TURN_CREDENTIAL || '3tXAhpxpPfiRAQKaeTPPyNl2j3c=';
+      
       pc = new RTCPeerConnection({
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
-          // Add TURN server if you have one (required for many network configurations)
-          // Example TURN server (replace with your own):
-          // {
-          //   urls: 'turn:your-turn-server.com:3478',
-          //   username: 'username',
-          //   credential: 'password'
-          // }
+          {
+            urls: turnUrl,
+            username: turnUsername,
+            credential: turnCredential
+          }
         ]
       });
 

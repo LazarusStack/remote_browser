@@ -76,13 +76,26 @@ export default function WebRTCTest() {
 
   const handleWebRTCOffer = async (offer) => {
     try {
-      // Create peer connection
-      const pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ]
+      // Get ICE servers (same as backend)
+      const iceServers = [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ]
+      
+      // Add TURN server (use environment variable or default)
+      const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:free.expressturn.com:3478'
+      const turnUsername = import.meta.env.VITE_TURN_USERNAME || '000000002084391365'
+      const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || '3tXAhpxpPfiRAQKaeTPPyNl2j3c='
+      
+      iceServers.push({
+        urls: turnUrl,
+        username: turnUsername,
+        credential: turnCredential
       })
+      addMessage('TURN server configured', 'info')
+      
+      // Create peer connection
+      const pc = new RTCPeerConnection({ iceServers })
 
       peerConnectionRef.current = pc
 

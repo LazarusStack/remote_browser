@@ -5,6 +5,32 @@ import { getBrowserInstance } from '../browser/browserManager.js';
 // Store test WebRTC connections (socket.id -> { pc, dataChannel })
 const testWebRTCConnections = new Map();
 
+// Get ICE servers configuration from environment variables
+function getIceServers() {
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ];
+
+  // Add TURN server if configured
+  const turnUrl = process.env.TURN_URL || 'turn:free.expressturn.com:3478';
+  const turnUsername = process.env.TURN_USERNAME || '000000002084391365';
+  const turnCredential = process.env.TURN_CREDENTIAL || '3tXAhpxpPfiRAQKaeTPPyNl2j3c=';
+
+  if (turnUrl && turnUsername && turnCredential) {
+    iceServers.push({
+      urls: turnUrl,
+      username: turnUsername,
+      credential: turnCredential
+    });
+    console.log('[WebRTC] TURN server configured:', turnUrl);
+  } else {
+    console.warn('[WebRTC] No TURN server configured - connections may fail in production. Set TURN_URL, TURN_USERNAME, and TURN_CREDENTIAL environment variables.');
+  }
+
+  return iceServers;
+}
+
 export function setupWebRTCHandlers(socket) {
   // WebRTC signaling handlers - client sends answer (handles both test and regular connections)
   socket.on("webrtc_answer", async ({ tabId, answer }) => {
@@ -47,17 +73,30 @@ export function setupWebRTCHandlers(socket) {
     }
   });
 
-  socket.on("webrtc_ice_candidate", async ({ tabId, candidate }) => {
+      socket.on("webrtc_ice_candidate", async ({ tabId, candidate }) => {
     // Check if this is a test connection (no tabId) or regular connection
     if (!tabId) {
       // Test connection
       const testConn = testWebRTCConnections.get(socket.id);
       if (testConn && testConn.pc && candidate) {
         try {
+          // Track remote candidates
+          if (!testConn.remoteCandidateCount) testConn.remoteCandidateCount = 0;
+          testConn.remoteCandidateCount++;
+          
           await testConn.pc.addIceCandidate(candidate);
-          console.log(`[WebRTC Test] ICE candidate added for socket ${socket.id}`);
+          console.log(`[WebRTC Test] Remote ICE candidate #${testConn.remoteCandidateCount} added for socket ${socket.id}:`, {
+            candidate: candidate.candidate?.substring(0, 100) || 'unknown',
+            sdpMLineIndex: candidate.sdpMLineIndex,
+            sdpMid: candidate.sdpMid
+          });
         } catch (error) {
-          console.error(`[WebRTC Test] Error adding ICE candidate:`, error);
+          console.error(`[WebRTC Test] Error adding ICE candidate:`, error.message);
+          console.error(`[WebRTC Test] Candidate details:`, {
+            candidate: candidate.candidate?.substring(0, 100),
+            sdpMLineIndex: candidate.sdpMLineIndex,
+            sdpMid: candidate.sdpMid
+          });
         }
       }
       return;
@@ -96,12 +135,14 @@ export function setupWebRTCHandlers(socket) {
     try {
       console.log(`[WebRTC Test] Starting test connection for socket ${socket.id}`);
       
+      // Track ICE candidates for diagnostics
+      let localCandidateCount = 0;
+      let remoteCandidateCount = 0;
+      const candidateTypes = { host: 0, srflx: 0, relay: 0, prflx: 0 };
+      
       // Create peer connection
       const pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ]
+        iceServers: getIceServers()
       });
 
       // Create data channel
@@ -180,26 +221,102 @@ export function setupWebRTCHandlers(socket) {
       // ICE candidate handler
       pc.onicecandidate = (event) => {
         if (event.candidate) {
+          localCandidateCount++;
+          const candidate = event.candidate.candidate;
+          
+          // Track candidate types for diagnostics
+          if (candidate.includes(' typ host ')) candidateTypes.host++;
+          else if (candidate.includes(' typ srflx ')) candidateTypes.srflx++;
+          else if (candidate.includes(' typ relay ')) candidateTypes.relay++;
+          else if (candidate.includes(' typ prflx ')) candidateTypes.prflx++;
+          
+          console.log(`[WebRTC Test] Local ICE candidate #${localCandidateCount} (${event.candidate.type || 'unknown'}) for socket ${socket.id}:`, {
+            candidate: candidate.substring(0, 100), // Log first 100 chars
+            sdpMLineIndex: event.candidate.sdpMLineIndex,
+            sdpMid: event.candidate.sdpMid
+          });
+          
           socket.emit('webrtc_ice_candidate', {
             candidate: event.candidate
+          });
+        } else {
+          console.log(`[WebRTC Test] ICE candidate gathering complete for socket ${socket.id}. Total candidates: ${localCandidateCount}`, {
+            types: candidateTypes,
+            gatheringState: pc.iceGatheringState
           });
         }
       };
 
+      // Store connection with candidate tracking (before handlers so they can reference it)
+      const testConn = { pc, dataChannel, remoteCandidateCount: 0 };
+      testWebRTCConnections.set(socket.id, testConn);
+
       // Connection state handlers
       pc.oniceconnectionstatechange = () => {
-        console.log(`[WebRTC Test] ICE connection state: ${pc.iceConnectionState} for socket ${socket.id}`);
-      };
-
-      pc.onconnectionstatechange = () => {
-        console.log(`[WebRTC Test] Connection state: ${pc.connectionState} for socket ${socket.id}`);
-        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-          testWebRTCConnections.delete(socket.id);
+        const iceState = pc.iceConnectionState;
+        const connState = pc.connectionState;
+        const gatheringState = pc.iceGatheringState;
+        
+        console.log(`[WebRTC Test] ICE connection state changed for socket ${socket.id}:`, {
+          iceConnectionState: iceState,
+          connectionState: connState,
+          iceGatheringState: gatheringState,
+          localCandidates: localCandidateCount,
+          remoteCandidates: testConn.remoteCandidateCount || 0
+        });
+        
+        if (iceState === 'failed') {
+          console.error(`[WebRTC Test] ❌ ICE connection failed for socket ${socket.id}. Possible causes:`, {
+            noRelayCandidates: candidateTypes.relay === 0 ? 'No TURN server configured - add TURN_URL, TURN_USERNAME, TURN_CREDENTIAL' : 'TURN server configured',
+            candidateCounts: {
+              local: localCandidateCount,
+              remote: testConn.remoteCandidateCount || 0,
+              types: candidateTypes
+            },
+            recommendation: candidateTypes.relay === 0 
+              ? 'Add TURN server for production environments (NAT/firewall traversal)'
+              : 'Check TURN server connectivity and credentials'
+          });
+        } else if (iceState === 'connected' || iceState === 'completed') {
+          console.log(`[WebRTC Test] ✅ ICE connection ${iceState} for socket ${socket.id}`);
         }
       };
 
-      // Store connection
-      testWebRTCConnections.set(socket.id, { pc, dataChannel });
+      pc.onconnectionstatechange = () => {
+        const connState = pc.connectionState;
+        const iceState = pc.iceConnectionState;
+        const gatheringState = pc.iceGatheringState;
+        
+        console.log(`[WebRTC Test] Connection state changed for socket ${socket.id}:`, {
+          connectionState: connState,
+          iceConnectionState: iceState,
+          iceGatheringState: gatheringState,
+          dataChannelState: dataChannel.readyState,
+          localCandidates: localCandidateCount,
+          remoteCandidates: testConn.remoteCandidateCount || 0
+        });
+        
+        if (connState === 'failed' || connState === 'closed') {
+          console.error(`[WebRTC Test] ❌ Connection ${connState} for socket ${socket.id}. Final diagnostics:`, {
+            iceConnectionState: iceState,
+            iceGatheringState: gatheringState,
+            dataChannelState: dataChannel.readyState,
+            candidateCounts: {
+              local: localCandidateCount,
+              remote: testConn.remoteCandidateCount || 0,
+              types: candidateTypes
+            },
+            hasTURN: candidateTypes.relay > 0,
+            recommendation: candidateTypes.relay === 0 
+              ? 'CRITICAL: Add TURN server (TURN_URL, TURN_USERNAME, TURN_CREDENTIAL) for production'
+              : 'Check network connectivity and TURN server status'
+          });
+          testWebRTCConnections.delete(socket.id);
+        } else if (connState === 'connected') {
+          console.log(`[WebRTC Test] ✅ Connection established successfully for socket ${socket.id}`);
+        }
+      };
+
 
       // Create and send offer
       const offer = await pc.createOffer();
