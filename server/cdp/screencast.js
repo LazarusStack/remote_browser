@@ -28,6 +28,11 @@ export async function startCDPScreencast(socket, tabId, browserInstance) {
 
       // Track last logged state per socket to avoid spam
       const lastLoggedState = {};
+      
+      // Frame throttling - only process frames if previous one is sent
+      const frameQueue = {}; // socketId -> { processing: boolean, lastFrameTime: number }
+      const TARGET_FPS = 30; // Target 30 FPS for smooth experience
+      const MIN_FRAME_INTERVAL = 1000 / TARGET_FPS; // ~33ms between frames
 
       // Listen for screencast frames
       cdpSession.on('Page.screencastFrame', async (event) => {
@@ -73,12 +78,28 @@ export async function startCDPScreencast(socket, tabId, browserInstance) {
               return;
             }
             
+            // Frame throttling - skip frame if too soon after last one
+            const queueKey = `${socketId}_${tabId}`;
+            const now = Date.now();
+            if (!frameQueue[queueKey]) {
+              frameQueue[queueKey] = { processing: false, lastFrameTime: 0 };
+            }
+            
+            const timeSinceLastFrame = now - frameQueue[queueKey].lastFrameTime;
+            if (timeSinceLastFrame < MIN_FRAME_INTERVAL && frameQueue[queueKey].processing) {
+              // Skip this frame - too soon and previous frame still processing
+              return;
+            }
+            
             // Channel is open - clear any previous warning states
             const openKey = `${socketId}_${tabId}_open`;
             if (!lastLoggedState[openKey]) {
               console.log(`[Screencast] ✅ Data channel open for socket ${socketId}, tab ${tabId} - sending frames`);
               lastLoggedState[openKey] = true;
             }
+
+            frameQueue[queueKey].processing = true;
+            frameQueue[queueKey].lastFrameTime = now;
 
             try {
               // WebRTC DataChannel has a maximum message size of ~64KB
@@ -88,11 +109,13 @@ export async function startCDPScreencast(socket, tabId, browserInstance) {
               if (imageBuffer.length <= MAX_CHUNK_SIZE) {
                 // Small enough to send in one message
                 dataChannel.send(imageBuffer);
+                frameQueue[queueKey].processing = false;
               } else {
-                // Need to chunk the data
+                // Need to chunk the data - send all chunks synchronously for speed
                 const totalChunks = Math.ceil(imageBuffer.length / MAX_CHUNK_SIZE);
                 const bufferView = new Uint8Array(imageBuffer);
                 
+                // Send all chunks immediately (they'll be queued by WebRTC)
                 for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
                   const start = chunkIndex * MAX_CHUNK_SIZE;
                   const end = Math.min(start + MAX_CHUNK_SIZE, imageBuffer.length);
@@ -112,6 +135,7 @@ export async function startCDPScreencast(socket, tabId, browserInstance) {
                   
                   dataChannel.send(chunkWithHeader.buffer);
                 }
+                frameQueue[queueKey].processing = false;
               }
               
               // Log first few frames to confirm sending
@@ -126,6 +150,7 @@ export async function startCDPScreencast(socket, tabId, browserInstance) {
               }
             } catch (error) {
               console.error(`[Screencast] ❌ Error sending screenshot binary through WebRTC DataChannel for socket ${socketId}, tab ${tabId}:`, error.message);
+              frameQueue[queueKey].processing = false;
               // WebRTC DataChannel error - skip this viewer
               // Viewer will need to reconnect to receive frames
             }
@@ -151,13 +176,13 @@ export async function startCDPScreencast(socket, tabId, browserInstance) {
       });
     }
 
-    // Start screencast with optimized settings
+    // Start screencast with optimized settings (quality maintained, frame rate controlled by throttling)
     await cdpSession.send('Page.startScreencast', {
       format: 'jpeg',
-      quality: 80, // Slightly reduced from 85 for bandwidth savings
+      quality: 90, // High quality maintained
       maxWidth: 1920,
       maxHeight: 1080,
-      everyNthFrame: 1 // Send every frame for smooth experience (WebRTC handles flow control)
+      everyNthFrame: 1 // CDP sends every frame, we throttle on our side for better control
     });
 
     browserInstance.screencastActive[tabId] = true;

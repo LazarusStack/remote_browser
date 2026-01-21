@@ -34,10 +34,11 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
       
       console.log(`[WebRTC] TURN server configured: ${turnUrl}`);
 
-      // Create data channel for screenshot data
+      // Create data channel for screenshot data with optimized settings
       const dataChannel = pc.createDataChannel('screenshots', {
-        ordered: false, // UDP-like behavior
-        maxRetransmits: 0 // Don't retransmit, drop old frames
+        ordered: false, // UDP-like behavior for lower latency
+        maxRetransmits: 0, // Don't retransmit, drop old frames (prioritize latest)
+        maxPacketLifeTime: 100 // Drop frames older than 100ms
       });
 
       dataChannel.binaryType = 'arraybuffer';

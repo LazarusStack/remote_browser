@@ -140,6 +140,11 @@ export const useWebRTC = () => {
                 cancelAnimationFrame(screenshotFrameRef.current);
               }
 
+              // Use requestAnimationFrame for smooth rendering, but don't queue multiple frames
+              if (screenshotFrameRef.current) {
+                cancelAnimationFrame(screenshotFrameRef.current);
+              }
+              
               screenshotFrameRef.current = requestAnimationFrame(() => {
                 if (latestScreenshotRef.current && latestScreenshotRef.current.tabId === tabId) {
                   setScreenshot(latestScreenshotRef.current.image);
