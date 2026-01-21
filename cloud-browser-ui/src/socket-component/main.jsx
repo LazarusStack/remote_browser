@@ -2,6 +2,10 @@ import { useEffect, useState, useRef } from "react";
 import { io } from "socket.io-client";
 
 export default function Main() {
+  const [browserCode, setBrowserCode] = useState("");
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [browserInfo, setBrowserInfo] = useState(null);
+  const [authError, setAuthError] = useState("");
   const [url, setUrl] = useState("");
   const [tabs, setTabs] = useState([]);
   const [activeTab, setActiveTab] = useState(null);
@@ -12,6 +16,9 @@ export default function Main() {
   const [offsetX, setOffsetX] = useState(0);
   const [offsetY, setOffsetY] = useState(0);
   const [showOffsetControls, setShowOffsetControls] = useState(false);
+  const [showCookieModal, setShowCookieModal] = useState(false);
+  const [cookieJson, setCookieJson] = useState("");
+  const [cookieStatus, setCookieStatus] = useState({ type: null, message: "" });
   const viewportRef = useRef(null);
   const scaleRef = useRef(1);
   const socketRef = useRef(null);
@@ -20,12 +27,44 @@ export default function Main() {
 
   // Initialize socket connection once
   useEffect(() => {
-    const socket = io("http://localhost:3000");
+    // Use environment variable or fallback to localhost for development
+    const serverUrl = import.meta.env.VITE_SERVER_URL || "http://localhost:3000";
+    const socket = io(serverUrl);
     socketRef.current = socket;
 
     socket.on("connect", () => {
       console.log("Connected to server");
+      // Don't list tabs until authenticated
+    });
+
+    socket.on("browser_connected", ({ browserId, name, code }) => {
+      console.log("Connected to browser:", name);
+      setIsAuthenticated(true);
+      setBrowserInfo({ browserId, name, code });
+      setAuthError("");
+      setIsLoading(false);
+      // Now we can list tabs
       socket.emit("list_tabs");
+    });
+
+    socket.on("browser_auth_error", ({ message }) => {
+      setAuthError(message);
+      setIsAuthenticated(false);
+      setBrowserInfo(null);
+      setIsLoading(false);
+    });
+
+    socket.on("cookies_set", ({ success, count, error }) => {
+      if (success) {
+        setCookieStatus({ type: "success", message: `Successfully imported ${count} cookies!` });
+        setTimeout(() => {
+          setCookieStatus({ type: null, message: "" });
+          setShowCookieModal(false);
+          setCookieJson("");
+        }, 2000);
+      } else {
+        setCookieStatus({ type: "error", message: error || "Failed to import cookies" });
+      }
     });
 
     socket.on("disconnect", () => {
@@ -251,6 +290,30 @@ export default function Main() {
     return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
   };
 
+  const handleConnectBrowser = () => {
+    if (!browserCode.trim() || !socketRef.current) return;
+    setAuthError("");
+    setIsLoading(true);
+    socketRef.current.emit("connect_browser", { code: browserCode.trim() });
+  };
+
+  const handleImportCookies = () => {
+    if (!cookieJson.trim() || !socketRef.current) return;
+    
+    try {
+      const cookies = JSON.parse(cookieJson);
+      if (!Array.isArray(cookies)) {
+        setCookieStatus({ type: "error", message: "Cookies must be an array" });
+        return;
+      }
+      
+      setCookieStatus({ type: null, message: "" });
+      socketRef.current.emit("set_cookies", { cookies });
+    } catch (error) {
+      setCookieStatus({ type: "error", message: `Invalid JSON: ${error.message}` });
+    }
+  };
+
   const openTab = () => {
     if (!url || !socketRef.current) return;
     setIsLoading(true);
@@ -417,8 +480,73 @@ export default function Main() {
     }
   }, [activeTab]);
 
+  // Show authentication screen if not authenticated
+  if (!isAuthenticated) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
+        <div className="bg-gray-800/90 backdrop-blur-sm rounded-2xl shadow-2xl p-8 w-full max-w-md border border-gray-700">
+          <h1 className="text-3xl font-bold mb-2 text-center bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+            Browser Access
+          </h1>
+          <p className="text-gray-400 text-sm text-center mb-6">
+            Enter your browser access code to continue
+          </p>
+
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Browser Code
+              </label>
+              <input
+                type="text"
+                value={browserCode}
+                onChange={(e) => setBrowserCode(e.target.value.toUpperCase())}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    handleConnectBrowser();
+                  }
+                }}
+                placeholder="Enter code (e.g., ABC123)"
+                className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white text-center text-lg font-mono focus:outline-none focus:border-blue-500"
+                autoFocus
+                maxLength={10}
+              />
+            </div>
+
+            {authError && (
+              <div className="p-3 bg-red-900/30 border border-red-700 rounded-lg text-red-400 text-sm text-center">
+                {authError}
+              </div>
+            )}
+
+            <button
+              onClick={handleConnectBrowser}
+              disabled={!browserCode.trim() || isLoading}
+              className="w-full px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 rounded-lg font-medium transition-all shadow-lg hover:shadow-blue-500/50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isLoading ? "Connecting..." : "Connect to Browser"}
+            </button>
+
+            <div className="mt-6 p-4 bg-gray-900/50 rounded-lg border border-gray-700">
+              <p className="text-xs text-gray-400 leading-relaxed">
+                💡 <strong>Note:</strong> Contact your administrator to get a browser access code.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-screen flex flex-col bg-gray-900 text-white overflow-hidden relative">
+      {/* Browser Info Bar */}
+      {browserInfo && (
+        <div className="absolute top-0 left-0 right-0 z-50 bg-blue-600/90 backdrop-blur-sm px-4 py-2 text-center text-sm">
+          Connected to: <span className="font-bold">{browserInfo.name}</span> (Code: {browserInfo.code})
+        </div>
+      )}
+
       {/* Browser Chrome - Overlay */}
       {!isFullscreen && (
         <div className="absolute top-0 left-0 right-0 z-50 bg-gray-800/95 border-b border-gray-700 backdrop-blur-sm">
@@ -535,6 +663,15 @@ export default function Main() {
             </button>
           </div>
         )}
+        {/* Cookie Import Button */}
+        <button
+          onClick={() => setShowCookieModal(true)}
+          className="px-3 py-2 bg-gray-800/90 hover:bg-gray-700 rounded text-sm backdrop-blur-sm"
+          title="Import cookies"
+        >
+          🍪
+        </button>
+        
         {/* Offset Toggle Button */}
         <button
           onClick={() => setShowOffsetControls(!showOffsetControls)}
@@ -554,7 +691,7 @@ export default function Main() {
       </div>
 
       {/* Browser Viewport */}
-      <div className="flex-1 overflow-hidden bg-gray-800 relative w-full h-full">
+      <div className={`flex-1 overflow-hidden bg-gray-800 relative w-full h-full ${browserInfo ? 'mt-8' : ''}`}>
         {activeTab ? (
           <div className="w-full h-full flex items-center justify-center relative">
             <div
@@ -607,6 +744,77 @@ export default function Main() {
           </div>
         )}
       </div>
+
+      {/* Cookie Import Modal */}
+      {showCookieModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-gray-800 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col border border-gray-700">
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+              <h2 className="text-xl font-bold text-white">Import Cookies</h2>
+              <button
+                onClick={() => {
+                  setShowCookieModal(false);
+                  setCookieJson("");
+                  setCookieStatus({ type: null, message: "" });
+                }}
+                className="text-gray-400 hover:text-white text-2xl leading-none"
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-hidden flex flex-col p-6">
+              <p className="text-sm text-gray-400 mb-4">
+                Paste your cookies JSON array here. Cookies will be applied to all tabs in this browser instance.
+              </p>
+              
+              <textarea
+                value={cookieJson}
+                onChange={(e) => {
+                  setCookieJson(e.target.value);
+                  setCookieStatus({ type: null, message: "" });
+                }}
+                placeholder='[{"domain":".youtube.com","name":"LOGIN_INFO","value":"...","path":"/","secure":true,...}]'
+                className="flex-1 w-full px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-white font-mono text-sm resize-none focus:outline-none focus:border-blue-500"
+              />
+
+              {cookieStatus.type && (
+                <div
+                  className={`mt-4 p-3 rounded-lg text-sm ${
+                    cookieStatus.type === "success"
+                      ? "bg-green-900/30 border border-green-700 text-green-400"
+                      : "bg-red-900/30 border border-red-700 text-red-400"
+                  }`}
+                >
+                  {cookieStatus.message}
+                </div>
+              )}
+
+              <div className="mt-4 flex gap-3">
+                <button
+                  onClick={handleImportCookies}
+                  className="flex-1 px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors"
+                  disabled={!cookieJson.trim()}
+                >
+                  Import Cookies
+                </button>
+                <button
+                  onClick={() => {
+                    setShowCookieModal(false);
+                    setCookieJson("");
+                    setCookieStatus({ type: null, message: "" });
+                  }}
+                  className="px-6 py-3 bg-gray-700 hover:bg-gray-600 rounded-lg font-medium transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
