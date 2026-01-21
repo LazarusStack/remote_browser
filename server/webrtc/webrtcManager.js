@@ -37,8 +37,7 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
       // Create data channel for screenshot data with optimized settings
       const dataChannel = pc.createDataChannel('screenshots', {
         ordered: false, // UDP-like behavior for lower latency
-        maxRetransmits: 0, // Don't retransmit, drop old frames (prioritize latest)
-        maxPacketLifeTime: 100 // Drop frames older than 100ms
+        maxPacketLifeTime: 100 // Drop frames older than 100ms (prioritize latest frames)
       });
 
       dataChannel.binaryType = 'arraybuffer';
