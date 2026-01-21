@@ -17,104 +17,6 @@ export default function Main() {
   const socketRef = useRef(null);
   const latestScreenshotRef = useRef(null);
   const screenshotFrameRef = useRef(null);
-  const dataChannelsRef = useRef({}); // tabId -> DataChannel
-  const peerConnectionsRef = useRef({}); // tabId -> RTCPeerConnection
-  
-  // Setup WebRTC for a tab
-  const setupWebRTCForTab = (tabId) => {
-    if (peerConnectionsRef.current[tabId]) {
-      return; // Already set up
-    }
-
-    try {
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-      });
-
-      // Handle incoming data channel (server creates it)
-      pc.ondatachannel = (event) => {
-        const dataChannel = event.channel;
-        dataChannel.binaryType = 'arraybuffer';
-        
-        dataChannel.onopen = () => {
-          console.log(`WebRTC DataChannel opened for tab ${tabId}`);
-          dataChannelsRef.current[tabId] = dataChannel;
-        };
-
-        dataChannel.onmessage = (event) => {
-          // Receive binary screenshot data
-          if (event.data instanceof ArrayBuffer) {
-            const bytes = new Uint8Array(event.data);
-            const base64 = btoa(
-              Array.from(bytes).map(byte => String.fromCharCode(byte)).join('')
-            );
-            const dataUrl = `data:image/jpeg;base64,${base64}`;
-            
-            setActiveTab((currentActiveTab) => {
-              if (tabId === currentActiveTab) {
-                latestScreenshotRef.current = {
-                  tabId,
-                  image: dataUrl,
-                  timestamp: Date.now()
-                };
-                
-                if (screenshotFrameRef.current) {
-                  cancelAnimationFrame(screenshotFrameRef.current);
-                }
-                
-                screenshotFrameRef.current = requestAnimationFrame(() => {
-                  if (latestScreenshotRef.current && latestScreenshotRef.current.tabId === tabId) {
-                    setScreenshot(latestScreenshotRef.current.image);
-                    setIsLoading(false);
-                    screenshotFrameRef.current = null;
-                  }
-                });
-              }
-              return currentActiveTab;
-            });
-          }
-        };
-
-        dataChannel.onerror = (error) => {
-          console.error(`WebRTC DataChannel error for tab ${tabId}:`, error);
-        };
-
-        dataChannel.onclose = () => {
-          console.log(`WebRTC DataChannel closed for tab ${tabId}`);
-          delete dataChannelsRef.current[tabId];
-        };
-      };
-
-      // Handle ICE candidates
-      pc.onicecandidate = (event) => {
-        if (event.candidate && socketRef.current) {
-          socketRef.current.emit('webrtc_ice_candidate', {
-            tabId,
-            candidate: event.candidate
-          });
-        }
-      };
-
-      pc.onconnectionstatechange = () => {
-        console.log(`WebRTC connection state for tab ${tabId}:`, pc.connectionState);
-        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-          cleanupWebRTCForTab(tabId);
-        }
-      };
-
-      peerConnectionsRef.current[tabId] = pc;
-    } catch (error) {
-      console.error("Error setting up WebRTC:", error);
-    }
-  };
-
-  const cleanupWebRTCForTab = (tabId) => {
-    if (peerConnectionsRef.current[tabId]) {
-      peerConnectionsRef.current[tabId].close();
-      delete peerConnectionsRef.current[tabId];
-    }
-    delete dataChannelsRef.current[tabId];
-  };
 
   // Initialize socket connection once
   useEffect(() => {
@@ -138,8 +40,6 @@ export default function Main() {
       setActiveTab(tabId);
       setCurrentUrl(url);
       socket.emit("list_tabs");
-      // Setup WebRTC for the new tab
-      setupWebRTCForTab(tabId);
     });
 
     socket.on("tab_closed", ({ tabId }) => {
@@ -149,8 +49,6 @@ export default function Main() {
         }
         return currentActiveTab;
       });
-      // Cleanup WebRTC for closed tab
-      cleanupWebRTCForTab(tabId);
       socket.emit("list_tabs");
     });
 
@@ -160,81 +58,8 @@ export default function Main() {
       if (tab) {
         setUrl(tab.url);
       }
-      // Setup WebRTC for the switched tab
-      setupWebRTCForTab(tabId);
     });
 
-    // Handle WebRTC offer from server
-    socket.on("webrtc_offer", async ({ tabId, offer }) => {
-      try {
-        let pc = peerConnectionsRef.current[tabId];
-        if (!pc) {
-          setupWebRTCForTab(tabId);
-          pc = peerConnectionsRef.current[tabId];
-        }
-        
-        if (pc && offer) {
-          await pc.setRemoteDescription(new RTCSessionDescription(offer));
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          socket.emit("webrtc_answer", {
-            tabId,
-            answer: pc.localDescription
-          });
-        }
-      } catch (error) {
-        console.error("Error handling WebRTC offer:", error);
-      }
-    });
-
-    // Handle WebRTC ICE candidate from server
-    socket.on("webrtc_ice_candidate", async ({ tabId, candidate }) => {
-      try {
-        const pc = peerConnectionsRef.current[tabId];
-        if (pc && candidate) {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        }
-      } catch (error) {
-        console.error("Error adding ICE candidate:", error);
-      }
-    });
-
-    // Handle binary screenshot data (more efficient)
-    socket.on("screenshot_binary", ({ tabId, image }) => {
-      setActiveTab((currentActiveTab) => {
-        if (tabId === currentActiveTab && image) {
-          // Convert binary to base64 data URL
-          const base64 = btoa(
-            new Uint8Array(image).reduce((data, byte) => data + String.fromCharCode(byte), '')
-          );
-          const dataUrl = `data:image/jpeg;base64,${base64}`;
-          
-          // UDP-like behavior: only keep the latest frame
-          latestScreenshotRef.current = {
-            tabId,
-            image: dataUrl,
-            timestamp: Date.now()
-          };
-          
-          // Cancel any pending frame update
-          if (screenshotFrameRef.current) {
-            cancelAnimationFrame(screenshotFrameRef.current);
-          }
-          
-          // Schedule update for next frame (only latest will be rendered)
-          screenshotFrameRef.current = requestAnimationFrame(() => {
-            if (latestScreenshotRef.current && latestScreenshotRef.current.tabId === tabId) {
-              setScreenshot(latestScreenshotRef.current.image);
-              setIsLoading(false);
-              screenshotFrameRef.current = null;
-            }
-          });
-        }
-        return currentActiveTab;
-      });
-    });
-
-    // Fallback: handle base64 screenshot (for compatibility)
     socket.on("screenshot", ({ tabId, image }) => {
       console.log("screenshot", tabId);
       setActiveTab((currentActiveTab) => {
@@ -284,10 +109,6 @@ export default function Main() {
       if (screenshotFrameRef.current) {
         cancelAnimationFrame(screenshotFrameRef.current);
       }
-      // Cleanup all WebRTC connections
-      Object.keys(peerConnectionsRef.current).forEach(tabId => {
-        cleanupWebRTCForTab(tabId);
-      });
     };
   }, []); // Only run once on mount
 
@@ -529,104 +350,25 @@ export default function Main() {
     
     // Handle special keys
     const specialKeys = {
-      // Navigation
       "Enter": "Enter",
-      "Tab": "Tab",
-      "Escape": "Escape",
       "Backspace": "Backspace",
       "Delete": "Delete",
-      "Insert": "Insert",
-      
-      // Arrow keys
       "ArrowUp": "ArrowUp",
       "ArrowDown": "ArrowDown",
       "ArrowLeft": "ArrowLeft",
       "ArrowRight": "ArrowRight",
-      
-      // Modifier keys
-      "Control": "Control",
-      "Meta": "Meta", // Command on Mac
-      "Alt": "Alt",
-      "Shift": "Shift",
-      
-      // Function keys
-      "F1": "F1",
-      "F2": "F2",
-      "F3": "F3",
-      "F4": "F4",
-      "F5": "F5",
-      "F6": "F6",
-      "F7": "F7",
-      "F8": "F8",
-      "F9": "F9",
-      "F10": "F10",
-      "F11": "F11",
-      "F12": "F12",
-      
-      // Navigation keys
-      "Home": "Home",
-      "End": "End",
-      "PageUp": "PageUp",
-      "PageDown": "PageDown",
-      
-      // Other special keys
-      "CapsLock": "CapsLock",
-      "NumLock": "NumLock",
-      "ScrollLock": "ScrollLock",
-      "Pause": "Pause",
-      "PrintScreen": "PrintScreen",
-      "ContextMenu": "ContextMenu", // Right-click menu key
-      
-      // Media keys (if supported)
-      "AudioVolumeUp": "AudioVolumeUp",
-      "AudioVolumeDown": "AudioVolumeDown",
-      "AudioVolumeMute": "AudioVolumeMute",
-      "MediaPlayPause": "MediaPlayPause",
-      "MediaStop": "MediaStop",
-      "MediaTrackNext": "MediaTrackNext",
-      "MediaTrackPrevious": "MediaTrackPrevious"
+      "Tab": "Tab",
+      "Escape": "Escape"
     };
 
-    // Handle modifier key combinations (Ctrl+C, Cmd+V, etc.)
-    if (e.ctrlKey || e.metaKey || e.altKey) {
-      const modifiers = [];
-      if (e.ctrlKey) modifiers.push("Control");
-      if (e.metaKey) modifiers.push("Meta");
-      if (e.altKey) modifiers.push("Alt");
-      if (e.shiftKey) modifiers.push("Shift");
-      
-      // Get the actual key (without modifiers)
-      const key = e.key;
-      
-      // Handle special key combinations
-      if (specialKeys[key]) {
-        e.preventDefault();
-        // Send combination like "Control+c" or "Meta+v"
-        const combination = modifiers.length > 0 
-          ? `${modifiers.join("+")}+${specialKeys[key]}`
-          : specialKeys[key];
-        socketRef.current.emit("keyboard_input", {
-          tabId: activeTab,
-          key: combination
-        });
-      } else if (key.length === 1) {
-        // Regular character with modifiers (e.g., Ctrl+C)
-        e.preventDefault();
-        const combination = `${modifiers.join("+")}+${key}`;
-        socketRef.current.emit("keyboard_input", {
-          tabId: activeTab,
-          key: combination
-        });
-      }
-    } else if (specialKeys[e.key]) {
-      // Standalone special key
+    if (specialKeys[e.key]) {
       e.preventDefault();
       socketRef.current.emit("keyboard_input", {
         tabId: activeTab,
         key: specialKeys[e.key]
       });
-    } else if (e.key.length === 1) {
-      // Regular character input (no modifiers)
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+      // Regular character input
       socketRef.current.emit("keyboard_input", {
         tabId: activeTab,
         text: e.key

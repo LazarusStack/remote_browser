@@ -4,8 +4,6 @@
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
-import wrtc from "@koush/wrtc";
-const { RTCPeerConnection, RTCSessionDescription } = wrtc;
 
 const app = express();
 const server = http.createServer(app);
@@ -21,8 +19,6 @@ let activeTabs = []; // tabId
 const cdpSessions = {}; // tabId -> CDP session
 const screencastActive = {}; // tabId -> boolean
 const tabViewers = {}; // tabId -> Set of socketIds viewing this tab
-const webrtcConnections = {}; // socketId -> { tabId -> RTCPeerConnection }
-const webrtcDataChannels = {}; // socketId -> { tabId -> RTCDataChannel }
 let chromium;
 
 async function initBrowser() {
@@ -46,89 +42,6 @@ async function initBrowser() {
   });
 }
 
-// Setup WebRTC connection for a client viewing a tab
-async function setupWebRTC(socket, tabId) {
-  try {
-    if (!webrtcConnections[socket.id]) {
-      webrtcConnections[socket.id] = {};
-    }
-    if (!webrtcDataChannels[socket.id]) {
-      webrtcDataChannels[socket.id] = {};
-    }
-
-    // Create or reuse peer connection for this tab
-    let pc = webrtcConnections[socket.id][tabId];
-    if (!pc) {
-      pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-      });
-
-      // Create data channel for screenshot data
-      const dataChannel = pc.createDataChannel('screenshots', {
-        ordered: false, // UDP-like behavior
-        maxRetransmits: 0 // Don't retransmit, drop old frames
-      });
-
-      dataChannel.binaryType = 'arraybuffer';
-      
-      dataChannel.onopen = () => {
-        console.log(`WebRTC DataChannel opened for tab ${tabId}, socket ${socket.id}`);
-      };
-
-      dataChannel.onerror = (error) => {
-        console.error(`WebRTC DataChannel error for tab ${tabId}:`, error);
-      };
-
-      dataChannel.onclose = () => {
-        console.log(`WebRTC DataChannel closed for tab ${tabId}`);
-        delete webrtcDataChannels[socket.id][tabId];
-      };
-
-      webrtcConnections[socket.id][tabId] = pc;
-      webrtcDataChannels[socket.id][tabId] = dataChannel;
-
-      // Handle ICE candidates
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          socket.emit('webrtc_ice_candidate', {
-            tabId,
-            candidate: event.candidate
-          });
-        }
-      };
-
-      pc.onconnectionstatechange = () => {
-        console.log(`WebRTC connection state for tab ${tabId}:`, pc.connectionState);
-        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-          cleanupWebRTC(socket.id, tabId);
-        }
-      };
-
-      // Create offer and send to client
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit('webrtc_offer', {
-        tabId,
-        offer: pc.localDescription
-      });
-    }
-
-    return webrtcDataChannels[socket.id][tabId];
-  } catch (error) {
-    console.error("Error setting up WebRTC:", error);
-    return null;
-  }
-}
-
-function cleanupWebRTC(socketId, tabId) {
-  if (webrtcConnections[socketId] && webrtcConnections[socketId][tabId]) {
-    webrtcConnections[socketId][tabId].close();
-    delete webrtcConnections[socketId][tabId];
-  }
-  if (webrtcDataChannels[socketId] && webrtcDataChannels[socketId][tabId]) {
-    delete webrtcDataChannels[socketId][tabId];
-  }
-}
 
 async function startCDPScreencast(socket, tabId) {
   const page = pages[tabId];
@@ -139,9 +52,6 @@ async function startCDPScreencast(socket, tabId) {
     tabViewers[tabId] = new Set();
   }
   tabViewers[tabId].add(socket.id);
-  
-  // Setup WebRTC for this client/tab
-  await setupWebRTC(socket, tabId);
 
   // Stop existing screencast for this tab if any
   if (screencastActive[tabId]) {
@@ -168,41 +78,14 @@ async function startCDPScreencast(socket, tabId) {
 
           
           // Broadcast frame to ALL clients viewing this tab
-          // Convert base64 to Buffer for efficient binary transfer
-          const imageBuffer = Buffer.from(data, 'base64');
           const viewers = tabViewers[tabId] || new Set();
-          
           viewers.forEach(socketId => {
-            // Try WebRTC DataChannel first (most efficient)
-            const dataChannel = webrtcDataChannels[socketId]?.[tabId];
-            if (dataChannel && dataChannel.readyState === 'open') {
-              try {
-                // Send binary data through WebRTC DataChannel
-                dataChannel.send(imageBuffer);
-              } catch (error) {
-                // Fallback to Socket.IO if WebRTC fails
-                const viewerSocket = io.sockets.sockets.get(socketId);
-                if (viewerSocket) {
-                  viewerSocket.emit("screenshot_binary", {
-                    tabId,
-                    image: imageBuffer
-                  });
-                }
-              }
-            } else {
-              // Fallback to Socket.IO binary
-              const viewerSocket = io.sockets.sockets.get(socketId);
-              if (viewerSocket) {
-                viewerSocket.emit("screenshot_binary", {
-                  tabId,
-                  image: imageBuffer
-                });
-                // Also send base64 for compatibility
-                viewerSocket.emit("screenshot", {
-                  tabId,
-                  image: data
-                });
-              }
+            const viewerSocket = io.sockets.sockets.get(socketId);
+            if (viewerSocket) {
+              viewerSocket.emit("screenshot", {
+                tabId,
+                image: data
+              });
             }
           });
 
@@ -380,9 +263,6 @@ io.on("connection", async (socket) => {
       }
     }
     
-    // Cleanup WebRTC for this tab
-    cleanupWebRTC(socket.id, tabId);
-    
     await page.close();
     delete pages[tabId];
     delete screencastActive[tabId];
@@ -426,28 +306,7 @@ io.on("connection", async (socket) => {
     
     try {
       if (key) {
-        // Check if it's a key combination (e.g., "Control+c", "Meta+v")
-        if (key.includes("+")) {
-          const parts = key.split("+");
-          const modifiers = parts.slice(0, -1); // All except last
-          const mainKey = parts[parts.length - 1]; // Last part is the actual key
-          
-          // Press modifiers
-          for (const modifier of modifiers) {
-            await page.keyboard.down(modifier);
-          }
-          
-          // Press the main key
-          await page.keyboard.press(mainKey);
-          
-          // Release modifiers
-          for (const modifier of modifiers.reverse()) {
-            await page.keyboard.up(modifier);
-          }
-        } else {
-          // Single key press
-          await page.keyboard.press(key);
-        }
+        await page.keyboard.press(key);
       } else if (text) {
         await page.keyboard.type(text);
       }
@@ -480,30 +339,6 @@ io.on("connection", async (socket) => {
     }
   });
 
-  // WebRTC signaling handlers - client sends answer
-  socket.on("webrtc_answer", async ({ tabId, answer }) => {
-    try {
-      const pc = webrtcConnections[socket.id]?.[tabId];
-      if (pc && answer) {
-        await pc.setRemoteDescription(new RTCSessionDescription(answer));
-        console.log(`WebRTC answer received for tab ${tabId}`);
-      }
-    } catch (error) {
-      console.error("Error handling WebRTC answer:", error);
-    }
-  });
-
-  socket.on("webrtc_ice_candidate", async ({ tabId, candidate }) => {
-    try {
-      const pc = webrtcConnections[socket.id]?.[tabId];
-      if (pc && candidate) {
-        await pc.addIceCandidate(candidate);
-      }
-    } catch (error) {
-      console.error("Error adding ICE candidate:", error);
-    }
-  });
-
   // Cleanup on disconnect
   socket.on("disconnect", async () => {
     // Remove this socket from all tab viewers
@@ -517,18 +352,6 @@ io.on("connection", async (socket) => {
         }
       }
     });
-    
-    // Cleanup all WebRTC connections for this socket
-    if (webrtcConnections[socket.id]) {
-      Object.keys(webrtcConnections[socket.id]).forEach(tabId => {
-        cleanupWebRTC(socket.id, tabId);
-      });
-      delete webrtcConnections[socket.id];
-    }
-    if (webrtcDataChannels[socket.id]) {
-      delete webrtcDataChannels[socket.id];
-    }
-    
     console.log("Client disconnected", socket.id);
   });
 });
