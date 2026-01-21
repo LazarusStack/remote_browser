@@ -66,10 +66,10 @@ export async function startCDPScreencast(socket, tabId, browserInstance, io) {
                   image: imageBuffer
                 });
                 // Also send base64 for compatibility
-                viewerSocket.emit("screenshot", {
-                  tabId,
-                  image: data
-                });
+                // viewerSocket.emit("screenshot", {
+                //   tabId,
+                //   image: data
+                // });
               }
             }
           });

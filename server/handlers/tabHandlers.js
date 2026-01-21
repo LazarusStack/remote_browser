@@ -3,6 +3,8 @@ import { startCDPScreencast, stopCDPScreencast } from '../cdp/screencast.js';
 import { cleanupWebRTC } from '../webrtc/webrtcManager.js';
 
 export function setupTabHandlers(socket, io) {
+
+  // Open a new tab
   socket.on("open_tab", async ({ url }) => {
     const browserInstance = getBrowserInstance(socket);
     if (!browserInstance) {
@@ -85,6 +87,7 @@ export function setupTabHandlers(socket, io) {
     }
   });
 
+  // List all tabs
   socket.on("list_tabs", async () => {
     const browserInstance = getBrowserInstance(socket);
     if (!browserInstance) {
@@ -101,6 +104,7 @@ export function setupTabHandlers(socket, io) {
     socket.emit("tabs_list", tabs);
   });
 
+  // Switch to a tab
   socket.on("switch_tab", async ({ tabId }) => {
     const browserInstance = getBrowserInstance(socket);
     if (!browserInstance) {
@@ -150,6 +154,7 @@ export function setupTabHandlers(socket, io) {
     socket.emit("tab_switched", { tabId });
   });
 
+  // Close a tab
   socket.on("close_tab", async ({ tabId }) => {
     const browserInstance = getBrowserInstance(socket);
     if (!browserInstance) {
@@ -193,6 +198,7 @@ export function setupTabHandlers(socket, io) {
     io.emit("tab_closed", { tabId });
   });
 
+  // Navigate to a URL
   socket.on("navigate", async ({ tabId, url }) => {
     const browserInstance = getBrowserInstance(socket);
     if (!browserInstance) return;
