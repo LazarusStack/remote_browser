@@ -43,6 +43,10 @@ export async function startCDPScreencast(socket, tabId, browserInstance) {
           viewers.forEach(socketId => {
             // Send binary data through WebRTC DataChannel
             const dataChannel = browserInstance.webrtcDataChannels[socketId]?.[tabId];
+            console.log("dataChannel", dataChannel);
+            console.log("imageBuffer", imageBuffer);
+            console.log("browserInstance.webrtcDataChannels", browserInstance.webrtcDataChannels);
+
             
             try {
               dataChannel.send(imageBuffer);
