@@ -16,19 +16,23 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
     if (!pc) {
       // Use STUN and TURN servers for better connectivity
       // TURN server is needed when direct connection fails (NAT/firewall issues)
+      const turnUrl = process.env.TURN_URL || 'turn:free.expressturn.com:3478';
+      const turnUsername = process.env.TURN_USERNAME || '000000002084391365';
+      const turnCredential = process.env.TURN_CREDENTIAL || '3tXAhpxpPfiRAQKaeTPPyNl2j3c=';
+      
       pc = new RTCPeerConnection({
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
-          // Add TURN server if you have one (required for many network configurations)
-          // Example TURN server (replace with your own):
-          // {
-          //   urls: 'turn:your-turn-server.com:3478',
-          //   username: 'username',
-          //   credential: 'password'
-          // }
+          {
+            urls: turnUrl,
+            username: turnUsername,
+            credential: turnCredential
+          }
         ]
       });
+      
+      console.log(`[WebRTC] TURN server configured: ${turnUrl}`);
 
       // Create data channel for screenshot data
       const dataChannel = pc.createDataChannel('screenshots', {
@@ -59,21 +63,38 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
       browserInstance.webrtcConnections[socket.id][tabId] = pc;
       browserInstance.webrtcDataChannels[socket.id][tabId] = dataChannel;
 
+      // Track candidate types for diagnostics
+      let candidateCount = 0;
+      const candidateTypes = { host: 0, srflx: 0, relay: 0, prflx: 0 };
+      
       // Handle ICE candidates
       pc.onicecandidate = (event) => {
         if (event.candidate) {
+          candidateCount++;
           const candidate = event.candidate;
-          console.log(`[WebRTC] ICE candidate generated for tab ${tabId}, socket ${socket.id}:`, {
-            candidate: candidate.candidate,
+          const candidateStr = candidate.candidate || '';
+          
+          // Track candidate types
+          if (candidateStr.includes(' typ host ')) candidateTypes.host++;
+          else if (candidateStr.includes(' typ srflx ')) candidateTypes.srflx++;
+          else if (candidateStr.includes(' typ relay ')) candidateTypes.relay++;
+          else if (candidateStr.includes(' typ prflx ')) candidateTypes.prflx++;
+          
+          console.log(`[WebRTC] ICE candidate #${candidateCount} generated for tab ${tabId}, socket ${socket.id}:`, {
+            candidate: candidateStr.substring(0, 100),
             sdpMLineIndex: candidate.sdpMLineIndex,
-            sdpMid: candidate.sdpMid
+            sdpMid: candidate.sdpMid,
+            hasRelay: candidateTypes.relay > 0
           });
           socket.emit('webrtc_ice_candidate', {
             tabId,
             candidate: candidate
           });
         } else {
-          console.log(`[WebRTC] ICE candidate gathering complete for tab ${tabId}, socket ${socket.id}`);
+          console.log(`[WebRTC] ICE candidate gathering complete for tab ${tabId}, socket ${socket.id}. Total: ${candidateCount}`, {
+            types: candidateTypes,
+            hasTURN: candidateTypes.relay > 0
+          });
         }
       };
 
@@ -83,10 +104,12 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
         console.log(`[WebRTC] ICE connection state changed for tab ${tabId}, socket ${socket.id}: ${iceState} (PC state: ${pc.connectionState})`);
         
         if (iceState === 'failed') {
-          console.error(`[WebRTC] ICE connection failed for tab ${tabId}, socket ${socket.id} - possible causes:`, {
+          console.error(`[WebRTC] ❌ ICE connection failed for tab ${tabId}, socket ${socket.id} - possible causes:`, {
             networkIssue: 'Firewall/NAT blocking UDP',
             stunIssue: 'STUN server unreachable',
-            noCandidates: 'No ICE candidates exchanged'
+            noCandidates: 'No ICE candidates exchanged',
+            noRelayCandidates: candidateTypes.relay === 0 ? 'No TURN relay candidates - check TURN server configuration' : 'TURN server working',
+            candidateTypes: candidateTypes
           });
         } else if (iceState === 'disconnected') {
           console.warn(`[WebRTC] ICE connection disconnected for tab ${tabId}, socket ${socket.id}`);

@@ -12,17 +12,19 @@ export const useWebRTC = () => {
       try {
         // Use STUN and TURN servers for better connectivity
         // TURN server is needed when direct connection fails (NAT/firewall issues)
+        const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:free.expressturn.com:3478';
+        const turnUsername = import.meta.env.VITE_TURN_USERNAME || '000000002084391365';
+        const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || '3tXAhpxpPfiRAQKaeTPPyNl2j3c=';
+        
         pc = new RTCPeerConnection({
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            // Add TURN server if you have one (required for many network configurations)
-            // Example TURN server (replace with your own):
-            // {
-            //   urls: 'turn:your-turn-server.com:3478',
-            //   username: 'username',
-            //   credential: 'password'
-            // }
+            {
+              urls: turnUrl,
+              username: turnUsername,
+              credential: turnCredential
+            }
           ]
         });
         peerConnectionsRef.current[tabId] = pc;
@@ -226,17 +228,19 @@ export const useWebRTC = () => {
         console.log(`[WebRTC Client] Creating peer connection for tab ${tabId} (offer received before setup)`);
         // Use STUN and TURN servers for better connectivity
         // TURN server is needed when direct connection fails (NAT/firewall issues)
+        const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:free.expressturn.com:3478';
+        const turnUsername = import.meta.env.VITE_TURN_USERNAME || '000000002084391365';
+        const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || '3tXAhpxpPfiRAQKaeTPPyNl2j3c=';
+        
         pc = new RTCPeerConnection({
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            // Add TURN server if you have one (required for many network configurations)
-            // Example TURN server (replace with your own):
-            // {
-            //   urls: 'turn:your-turn-server.com:3478',
-            //   username: 'username',
-            //   credential: 'password'
-            // }
+            {
+              urls: turnUrl,
+              username: turnUsername,
+              credential: turnCredential
+            }
           ]
         });
 
