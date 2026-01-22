@@ -25,12 +25,33 @@ import { handleDisconnect } from "./handlers/disconnectHandler.js";
 const app = express();
 const server = http.createServer(app);
 
-// Initialize Socket.IO
+// Initialize Socket.IO with optimizations for binary streaming
 const io = new Server(server, {
   cors: { 
     origin: config.allowedOrigins.includes("*") ? "*" : config.allowedOrigins,
     credentials: true
-  }
+  },
+  // Optimize for binary data transfer
+  transports: ['websocket', 'polling'], // Prefer websocket, fallback to polling
+  allowEIO3: true,
+  // Enable compression for better performance
+  perMessageDeflate: {
+    zlibDeflateOptions: {
+      chunkSize: 1024,
+      memLevel: 7,
+      level: 3 // Balance between speed and compression
+    },
+    zlibInflateOptions: {
+      chunkSize: 10 * 1024
+    },
+    // Only compress if payload is > 1KB
+    threshold: 1024
+  },
+  // Optimize ping/pong for lower latency
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  // Increase max HTTP buffer for large binary frames
+  maxHttpBufferSize: 1e8 // 100MB
 });
 
 // Browser instances storage: browserId -> { browser, context, pages, tabCounter, etc. }

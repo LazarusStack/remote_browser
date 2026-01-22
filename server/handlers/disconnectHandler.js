@@ -1,7 +1,7 @@
 // Disconnect cleanup handler
 
 import { getBrowserInstance } from '../browser/browserManager.js';
-import { stopCDPScreencast } from '../browser/screencast.js';
+import { stopCDPScreencast, cleanupClientFrameQueue } from '../browser/screencast.js';
 
 /**
  * Handle client disconnect - cleanup resources
@@ -24,6 +24,9 @@ export async function handleDisconnect(socket, socketBrowserMap, browserInstance
   
   // Remove socket from browser map
   delete socketBrowserMap[socket.id];
+  
+  // Clean up client frame queue
+  cleanupClientFrameQueue(socket.id);
   
   console.log("Client disconnected", socket.id);
 }
