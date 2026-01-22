@@ -61,18 +61,16 @@ export async function startCDPScreencast(socket, tabId, browserInstance, io) {
       let startTime = Date.now();
       const minFrameInterval = config.screencast.minFrameInterval;
       
-      cdpSession.on('Page.screencastFrame', async (event) => {
+      cdpSession.on('Page.screencastFrame', (event) => {
         if (!browserInstance.screencastActive[tabId] || !browserInstance.pages[tabId] || browserInstance.pages[tabId].isClosed()) {
           return;
         }
 
-        // Google Meet style: Always acknowledge immediately to keep CDP happy
+        // Fire and forget: acknowledge immediately without blocking (hot path optimization)
         const { sessionId, data } = event;
-        try {
-          await cdpSession.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
-        } catch {}
+        cdpSession.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
 
-        // Hash-based frame skipping: skip identical frames
+        // Hash-based frame skipping: skip identical frames (do this before any async work)
         const frameHash = crypto.createHash('md5').update(data).digest('hex');
         if (frameHash === lastFrameHash) {
           duplicateFrames++;
@@ -96,129 +94,132 @@ export async function startCDPScreencast(socket, tabId, browserInstance, io) {
         frameCount++;
         frameProcessing = true;
 
-        try {
-          // Convert base64 to Buffer for efficient binary transfer
-          const imageBuffer = Buffer.from(data, 'base64');
-          
-          // Compress the frame using gzip (fast compression level 1)
-          let compressedBuffer;
-          let isCompressed = false;
+        // Process frame asynchronously (don't block the event handler)
+        (async () => {
           try {
-            // Only compress if frame is larger than 10KB (compression overhead not worth it for small frames)
-            if (imageBuffer.length > 10240) {
-              compressedBuffer = await gzip(imageBuffer, { level: 1 }); // Fast compression
-              // Only use compressed if it's actually smaller
-              if (compressedBuffer.length < imageBuffer.length * 0.9) {
-                isCompressed = true;
+            // Convert base64 to Buffer for efficient binary transfer (parallel with ack)
+            const imageBuffer = Buffer.from(data, 'base64');
+          
+            // Compress the frame using gzip (fast compression level 1) - non-blocking
+            let compressedBuffer;
+            let isCompressed = false;
+            try {
+              // Only compress if frame is larger than 10KB (compression overhead not worth it for small frames)
+              if (imageBuffer.length > 10240) {
+                compressedBuffer = await gzip(imageBuffer, { level: 1 }); // Fast compression
+                // Only use compressed if it's actually smaller
+                if (compressedBuffer.length < imageBuffer.length * 0.9) {
+                  isCompressed = true;
+                } else {
+                  compressedBuffer = imageBuffer;
+                }
               } else {
                 compressedBuffer = imageBuffer;
               }
-            } else {
+            } catch (compressionError) {
+              // If compression fails, use original buffer
               compressedBuffer = imageBuffer;
+              // Don't log warnings in hot path - silent fail
             }
-          } catch (compressionError) {
-            // If compression fails, use original buffer
-            compressedBuffer = imageBuffer;
-            console.warn("Compression failed, using uncompressed frame:", compressionError.message);
-          }
-          
-          latestFrameId++;
-          const currentFrameId = latestFrameId;
-          
-          // Store as latest frame (will be sent to clients)
-          latestFrame = {
-            frameId: currentFrameId,
-            imageBuffer,
-            timestamp: now
-          };
+            
+            latestFrameId++;
+            const currentFrameId = latestFrameId;
+            
+            // Store as latest frame (will be sent to clients)
+            latestFrame = {
+              frameId: currentFrameId,
+              imageBuffer,
+              timestamp: now
+            };
 
-          // Broadcast to all viewers with smart queue management
-          const viewers = browserInstance.tabViewers[tabId] || new Set();
-          const sendPromises = [];
-          
-          viewers.forEach(socketId => {
-            const viewerSocket = io.sockets.sockets.get(socketId);
-            if (!viewerSocket || !viewerSocket.connected) {
-              // Clean up disconnected viewers
-              viewers.delete(socketId);
-              clientFrameQueues.delete(socketId);
-              return;
-            }
+            // Broadcast to all viewers with smart queue management
+            const viewers = browserInstance.tabViewers[tabId] || new Set();
+            const sendPromises = [];
+            
+            viewers.forEach(socketId => {
+              const viewerSocket = io.sockets.sockets.get(socketId);
+              if (!viewerSocket || !viewerSocket.connected) {
+                // Clean up disconnected viewers
+                viewers.delete(socketId);
+                clientFrameQueues.delete(socketId);
+                return;
+              }
 
-            const clientQueue = clientFrameQueues.get(socketId);
-            if (!clientQueue) return;
+              const clientQueue = clientFrameQueues.get(socketId);
+              if (!clientQueue) return;
 
-            // Skip if client has too many pending frames (backpressure)
-            if (clientQueue.pendingFrames > 2) {
-              return; // Client is slow, skip this frame
-            }
+              // Skip if client has too many pending frames (backpressure)
+              if (clientQueue.pendingFrames > 2) {
+                return; // Client is slow, skip this frame
+              }
 
-            // Check if we should send (respect client's processing rate)
-            const timeSinceLastSend = now - clientQueue.lastSentTime;
-            if (timeSinceLastSend < minFrameInterval && clientQueue.pendingFrames > 0) {
-              return; // Too soon, client still processing
-            }
+              // Check if we should send (respect client's processing rate)
+              const timeSinceLastSend = now - clientQueue.lastSentTime;
+              if (timeSinceLastSend < minFrameInterval && clientQueue.pendingFrames > 0) {
+                return; // Too soon, client still processing
+              }
 
-            // Mark as pending
-            clientQueue.pendingFrames++;
-            clientQueue.lastSentTime = now;
+              // Mark as pending
+              clientQueue.pendingFrames++;
+              clientQueue.lastSentTime = now;
 
-            // Send frame asynchronously
-            const sendPromise = new Promise((resolve) => {
-              // Use volatile emit for better performance (don't queue if socket is busy)
-              const sent = viewerSocket.volatile.emit("screenshot_binary", {
-                tabId,
-                image: compressedBuffer,
-                frameId: currentFrameId,
-                timestamp: now,
-                compressed: isCompressed
-              });
+              // Send frame asynchronously
+              const sendPromise = new Promise((resolve) => {
+                // Use volatile emit for better performance (don't queue if socket is busy)
+                const sent = viewerSocket.volatile.emit("screenshot_binary", {
+                  tabId,
+                  image: compressedBuffer,
+                  frameId: currentFrameId,
+                  timestamp: now,
+                  compressed: isCompressed
+                });
 
-              if (sent) {
-                // Frame sent successfully, will be decremented when client acknowledges
-                // For now, we'll use a timeout to decrement (client might not acknowledge)
-                setTimeout(() => {
+                if (sent) {
+                  // Frame sent successfully, will be decremented when client acknowledges
+                  // For now, we'll use a timeout to decrement (client might not acknowledge)
+                  setTimeout(() => {
+                    clientQueue.pendingFrames = Math.max(0, clientQueue.pendingFrames - 1);
+                    resolve();
+                  }, minFrameInterval);
+                } else {
+                  // Socket is busy, decrement immediately
                   clientQueue.pendingFrames = Math.max(0, clientQueue.pendingFrames - 1);
                   resolve();
-                }, minFrameInterval);
-              } else {
-                // Socket is busy, decrement immediately
-                clientQueue.pendingFrames = Math.max(0, clientQueue.pendingFrames - 1);
-                resolve();
-              }
+                }
+              });
+
+              sendPromises.push(sendPromise);
             });
 
-            sendPromises.push(sendPromise);
-          });
+            // Wait for all sends to complete (non-blocking)
+            Promise.all(sendPromises).catch(() => {});
 
-          // Wait for all sends to complete (non-blocking)
-          Promise.all(sendPromises).catch(() => {});
+            // Log performance stats every 60 frames
+            if (frameCount % 60 === 0) {
+              const elapsed = (Date.now() - startTime) / 1000;
+              const fps = Math.round((frameCount / elapsed) * 10) / 10;
+              const originalSizeKB = Math.round(imageBuffer.length / 1024);
+              const compressedSizeKB = Math.round(compressedBuffer.length / 1024);
+              const compressionRatio = isCompressed 
+                ? Math.round((1 - compressedBuffer.length / imageBuffer.length) * 100) 
+                : 0;
+              const activeViewers = viewers.size;
+              console.log(
+                `Tab ${tabId}: ${frameCount} frames (${fps} FPS), ${skippedFrames} dropped, ${duplicateFrames} duplicates, ` +
+                `~${originalSizeKB}KB→${compressedSizeKB}KB${isCompressed ? ` (${compressionRatio}% saved)` : ''}/frame, ${activeViewers} viewers`
+              );
+              duplicateFrames = 0; // Reset counter
+            }
 
-          // Log performance stats every 60 frames
-          if (frameCount % 60 === 0) {
-            const elapsed = (Date.now() - startTime) / 1000;
-            const fps = Math.round((frameCount / elapsed) * 10) / 10;
-            const originalSizeKB = Math.round(imageBuffer.length / 1024);
-            const compressedSizeKB = Math.round(compressedBuffer.length / 1024);
-            const compressionRatio = isCompressed 
-              ? Math.round((1 - compressedBuffer.length / imageBuffer.length) * 100) 
-              : 0;
-            const activeViewers = viewers.size;
-            console.log(
-              `Tab ${tabId}: ${frameCount} frames (${fps} FPS), ${skippedFrames} dropped, ${duplicateFrames} duplicates, ` +
-              `~${originalSizeKB}KB→${compressedSizeKB}KB${isCompressed ? ` (${compressionRatio}% saved)` : ''}/frame, ${activeViewers} viewers`
-            );
-            duplicateFrames = 0; // Reset counter
+            frameProcessing = false;
+          } catch (error) {
+            frameProcessing = false;
+            // Silently handle errors - page might be closing
+            if (!error.message.includes('closed') && !error.message.includes('Target closed')) {
+              console.error("Error processing screencast frame:", error.message);
+            }
           }
-
-          frameProcessing = false;
-        } catch (error) {
-          frameProcessing = false;
-          // Silently handle errors - page might be closing
-          if (!error.message.includes('closed') && !error.message.includes('Target closed')) {
-            console.error("Error processing screencast frame:", error.message);
-          }
-        }
+        })(); // Execute async function immediately
       });
 
       // Handle CDP session errors

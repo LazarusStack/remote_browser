@@ -21,7 +21,7 @@ export const config = {
     maxWidth: 1920,
     maxHeight: 1080,
     everyNthFrame: 1, // Send every frame, we'll throttle on server side
-    minFrameInterval: 33 // ~30 FPS max (33ms = 30fps, smoother than 20fps)
+    minFrameInterval: 20 // ~50 FPS max (20ms = 50fps, very smooth) - can go to 16ms for 60fps if needed
   }
 };
 
