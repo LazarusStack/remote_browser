@@ -12,13 +12,22 @@ export const config = {
       '--disable-software-rasterizer',
       '--disable-extensions',
       '--no-sandbox',
-      '--disable-setuid-sandbox'
+      '--disable-setuid-sandbox',
+      // Performance optimizations for faster screencast encoding
+      '--disable-background-networking',
+      '--disable-background-timer-throttling',
+      '--disable-renderer-backgrounding',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-ipc-flooding-protection',
+      '--enable-features=NetworkService,NetworkServiceInProcess',
+      '--disable-features=TranslateUI',
+      '--disable-ipc-flooding-protection'
     ]
   },
   screencast: {
     format: 'jpeg', // JPEG is more widely supported than WebP in CDP
-    quality: 30,
-    maxWidth: 1920,
+    quality: 20, // Very low quality = fastest encoding (needed for 30+ FPS at 1080p)
+    maxWidth: 1920, // Keep 1080p for cursor coordinate accuracy
     maxHeight: 1080,
     everyNthFrame: 1, // Send every frame from CDP
     minFrameInterval: 16 // ~60 FPS max (16ms = 60fps) - CDP encoding is the real bottleneck
