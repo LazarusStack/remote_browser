@@ -54,34 +54,35 @@ export function useWebSocket(serverUrl) {
 
       ws.onmessage = (event) => {
         if (event.data instanceof ArrayBuffer) {
-          // Binary message - parse frame with metadata
+          // Binary message - parse fixed header format (faster than JSON)
           try {
             const buffer = new Uint8Array(event.data);
-            
-            // Read metadata length (first 4 bytes, big-endian)
             const dataView = new DataView(buffer.buffer);
-            const metadataLength = dataView.getUint32(0, false); // false = big-endian
             
-            // Read metadata (JSON)
-            const metadataStart = 4;
-            const metadataEnd = metadataStart + metadataLength;
-            const metadataStr = new TextDecoder().decode(buffer.slice(metadataStart, metadataEnd));
-            const metadata = JSON.parse(metadataStr);
+            // Fixed header format: [4 bytes payload size][4 bytes tabId hash][4 bytes frameId][8 bytes timestamp]
+            const HEADER_SIZE = 20;
+            const payloadSize = dataView.getUint32(0, false);  // big-endian
+            const tabIdHash = dataView.getUint32(4, false);
+            const frameId = dataView.getUint32(8, false);
+            const timestamp = Number(dataView.getBigUint64(12, false)); // Convert BigInt to Number
             
-            // Extract binary data (rest of the buffer)
-            const binaryStart = metadataEnd;
-            const binaryData = buffer.slice(binaryStart);
+            // Extract binary image data (rest of the buffer after header)
+            const binaryData = buffer.slice(HEADER_SIZE);
+            
+            // Convert tabId hash back to string format (for compatibility)
+            // Note: This is a simple conversion - you may want to maintain a mapping
+            const tabId = `tab_${tabIdHash}`;
             
             // Trigger screenshot_binary event with parsed data
             if (listenersRef.current.has('screenshot_binary')) {
               const callbacks = listenersRef.current.get('screenshot_binary');
               callbacks.forEach(callback => {
                 callback({
-                  tabId: metadata.tabId,
+                  tabId,
                   image: binaryData.buffer, // Pass ArrayBuffer
-                  frameId: metadata.frameId,
-                  timestamp: metadata.timestamp,
-                  compressed: metadata.compressed
+                  frameId,
+                  timestamp,
+                  compressed: false // No compression for JPEG
                 });
               });
             }
