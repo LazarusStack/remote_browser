@@ -71,6 +71,14 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
       let startTime = Date.now();
       const minFrameInterval = config.screencast.minFrameInterval;
       
+      // Latency tracking
+      let latencyStats = {
+        total: 0,
+        min: Infinity,
+        max: 0,
+        count: 0
+      };
+      
       cdpSession.on('Page.screencastFrame', (event) => {
         if (!browserInstance.screencastActive[tabId] || !browserInstance.pages[tabId] || browserInstance.pages[tabId].isClosed()) {
           return;
@@ -106,9 +114,12 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
 
         // Process frame asynchronously (don't block the event handler)
         (async () => {
+          const frameStartTime = Date.now(); // Track frame processing start
           try {
             // Convert base64 to Buffer for efficient binary transfer (parallel with ack)
+            const decodeStart = Date.now();
             const imageBuffer = Buffer.from(data, 'base64');
+            const decodeTime = Date.now() - decodeStart;
             
             // Skip compression - JPEG is already compressed, gzip adds 10-30ms latency for minimal benefit
             // Just use the raw buffer directly
@@ -157,6 +168,8 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
 
               // Send binary frame with pre-allocated fixed header (no JSON parsing needed)
               try {
+                const sendStart = Date.now();
+                
                 // Create numeric tab ID hash (extract number from "tab_123" -> 123)
                 // This is faster than string comparison and works with tab_${counter} format
                 const tabIdHash = parseInt(tabId.replace(/^tab_/, '')) || 0;
@@ -174,6 +187,16 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
                 
                 // Send binary frame (non-blocking)
                 const sent = sendBinary(viewerWS, frame);
+                const sendTime = Date.now() - sendStart;
+                
+                // Calculate total latency: from CDP frame received to sent to client
+                const totalLatency = Date.now() - frameStartTime;
+                
+                // Update latency stats
+                latencyStats.total += totalLatency;
+                latencyStats.count++;
+                latencyStats.min = Math.min(latencyStats.min, totalLatency);
+                latencyStats.max = Math.max(latencyStats.max, totalLatency);
                 
                 if (sent) {
                   // Frame sent successfully
@@ -198,11 +221,23 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
               const fps = Math.round((frameCount / elapsed) * 10) / 10;
               const sizeKB = Math.round(imageBuffer.length / 1024);
               const activeViewers = viewers.size;
+              
+              // Calculate average latency
+              const avgLatency = latencyStats.count > 0 
+                ? Math.round(latencyStats.total / latencyStats.count) 
+                : 0;
+              const minLatency = latencyStats.min === Infinity ? 0 : latencyStats.min;
+              const maxLatency = latencyStats.max;
+              
               console.log(
                 `Tab ${tabId}: ${frameCount} frames (${fps} FPS), ${skippedFrames} dropped, ${duplicateFrames} duplicates, ` +
-                `~${sizeKB}KB/frame, ${activeViewers} viewers`
+                `~${sizeKB}KB/frame, ${activeViewers} viewers | ` +
+                `Latency: avg=${avgLatency}ms, min=${minLatency}ms, max=${maxLatency}ms`
               );
-              duplicateFrames = 0; // Reset counter
+              
+              // Reset counters
+              duplicateFrames = 0;
+              latencyStats = { total: 0, min: Infinity, max: 0, count: 0 };
             }
 
             frameProcessing = false;

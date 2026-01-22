@@ -21,6 +21,14 @@ export function useScreenshot(socketRef, activeTab) {
     let lastReceiveTime = Date.now();
     let droppedFrames = 0;
     
+    // Client-side latency tracking
+    let clientLatencyStats = {
+      total: 0,
+      min: Infinity,
+      max: 0,
+      count: 0
+    };
+    
     const processFrameQueue = async () => {
       if (isProcessingRef.current || frameQueueRef.current.length === 0) {
         return;
@@ -120,7 +128,7 @@ export function useScreenshot(socketRef, activeTab) {
     };
     
     const handleScreenshotBinary = async ({ tabId, image, frameId, timestamp, compressed }) => {
-      const receiveTime = timestamp || Date.now();
+      const receiveTime = Date.now(); // Actual time when frame is received
       frameReceiveCount++;
       
       if (tabId === activeTab && image) {
@@ -186,6 +194,15 @@ export function useScreenshot(socketRef, activeTab) {
             : new Blob([image], { type: 'image/jpeg' });
         }
 
+        // Calculate client-side latency (from server timestamp to received)
+        if (timestamp) {
+          const clientLatency = receiveTime - timestamp; // Time from server send to client receive
+          clientLatencyStats.total += clientLatency;
+          clientLatencyStats.count++;
+          clientLatencyStats.min = Math.min(clientLatencyStats.min, clientLatency);
+          clientLatencyStats.max = Math.max(clientLatencyStats.max, clientLatency);
+        }
+        
         // Add to queue (will be processed asynchronously)
         frameQueueRef.current.push({
           tabId,
@@ -196,15 +213,28 @@ export function useScreenshot(socketRef, activeTab) {
 
         // Process queue (will drop old frames automatically)
         processFrameQueue();
-
+        
         // Log performance every 60 frames
         if (frameReceiveCount % 60 === 0) {
           const elapsed = (receiveTime - lastReceiveTime) / 1000;
           const fps = Math.round((60 / elapsed) * 10) / 10;
           const sizeKB = Math.round((imageBlob.size || image.length || 0) / 1024);
-          console.log(`[Client] Received ${frameReceiveCount} frames (${fps} FPS), ${droppedFrames} dropped, ~${sizeKB}KB/frame`);
+          
+          // Calculate average client latency
+          const avgClientLatency = clientLatencyStats.count > 0 
+            ? Math.round(clientLatencyStats.total / clientLatencyStats.count) 
+            : 0;
+          const minClientLatency = clientLatencyStats.min === Infinity ? 0 : clientLatencyStats.min;
+          const maxClientLatency = clientLatencyStats.max;
+          
+          console.log(
+            `[Client] Received ${frameReceiveCount} frames (${fps} FPS), ${droppedFrames} dropped, ~${sizeKB}KB/frame | ` +
+            `Network Latency: avg=${avgClientLatency}ms, min=${minClientLatency}ms, max=${maxClientLatency}ms`
+          );
+          
           lastReceiveTime = receiveTime;
           droppedFrames = 0; // Reset counter
+          clientLatencyStats = { total: 0, min: Infinity, max: 0, count: 0 }; // Reset latency stats
         }
       }
     };
