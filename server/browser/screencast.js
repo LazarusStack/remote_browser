@@ -64,12 +64,13 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
       // Pre-allocate header buffer (reused for every frame)
       const headerBuffer = Buffer.alloc(HEADER_SIZE);
       
-      // Listen for screencast frames with smart throttling
+      // Listen for screencast frames
       let lastFrameTime = 0;
       let frameCount = 0;
       let skippedFrames = 0;
       let startTime = Date.now();
-      const minFrameInterval = config.screencast.minFrameInterval;
+      let lastCDPFrameTime = Date.now();
+      let cdpFrameIntervals = [];
       
       // Latency tracking
       let latencyStats = {
@@ -80,6 +81,13 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
       };
       
       cdpSession.on('Page.screencastFrame', (event) => {
+        // Track CDP frame arrival rate
+        const now = Date.now();
+        const cdpInterval = now - lastCDPFrameTime;
+        lastCDPFrameTime = now;
+        if (cdpFrameIntervals.length < 60) {
+          cdpFrameIntervals.push(cdpInterval);
+        }
         if (!browserInstance.screencastActive[tabId] || !browserInstance.pages[tabId] || browserInstance.pages[tabId].isClosed()) {
           return;
         }
@@ -102,14 +110,11 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
           return;
         }
 
-        // Throttle frames to prevent overwhelming the network
-        const now = Date.now();
-        if (now - lastFrameTime < minFrameInterval) {
-          skippedFrames++;
-          return;
-        }
-        lastFrameTime = now;
+        // Don't throttle - CDP encoding is already the bottleneck
+        // If CDP sends frames slowly, we want to process them immediately
+        // 'now' is already declared above for CDP frame tracking
         frameCount++;
+        lastFrameTime = now;
         frameProcessing = true;
 
         // Process frame asynchronously (don't block the event handler)
@@ -156,11 +161,8 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
                 return; // Client is slow, skip this frame
               }
 
-              // Check if we should send (respect client's processing rate)
-              const timeSinceLastSend = now - clientQueue.lastSentTime;
-              if (timeSinceLastSend < minFrameInterval && clientQueue.pendingFrames > 0) {
-                return; // Too soon, client still processing
-              }
+              // Don't throttle per-client - CDP is already slow enough
+              // Just check backpressure (pending frames)
 
               // Mark as pending
               clientQueue.pendingFrames++;
@@ -202,7 +204,7 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
                   // Frame sent successfully
                   setTimeout(() => {
                     clientQueue.pendingFrames = Math.max(0, clientQueue.pendingFrames - 1);
-                  }, minFrameInterval);
+                  }, 16); // Fixed 16ms timeout (no longer using minFrameInterval)
                 } else {
                   // Socket is busy, decrement immediately
                   clientQueue.pendingFrames = Math.max(0, clientQueue.pendingFrames - 1);
@@ -229,15 +231,23 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
               const minLatency = latencyStats.min === Infinity ? 0 : latencyStats.min;
               const maxLatency = latencyStats.max;
               
+              // Calculate CDP frame rate (actual rate CDP is sending)
+              const avgCDPInterval = cdpFrameIntervals.length > 0
+                ? Math.round(cdpFrameIntervals.reduce((a, b) => a + b, 0) / cdpFrameIntervals.length)
+                : 0;
+              const cdpFPS = avgCDPInterval > 0 ? Math.round(1000 / avgCDPInterval) : 0;
+              
               console.log(
                 `Tab ${tabId}: ${frameCount} frames (${fps} FPS), ${skippedFrames} dropped, ${duplicateFrames} duplicates, ` +
                 `~${sizeKB}KB/frame, ${activeViewers} viewers | ` +
-                `Latency: avg=${avgLatency}ms, min=${minLatency}ms, max=${maxLatency}ms`
+                `Latency: avg=${avgLatency}ms, min=${minLatency}ms, max=${maxLatency}ms | ` +
+                `CDP: ${cdpFPS} FPS (${avgCDPInterval}ms interval)`
               );
               
               // Reset counters
               duplicateFrames = 0;
               latencyStats = { total: 0, min: Infinity, max: 0, count: 0 };
+              cdpFrameIntervals = [];
             }
 
             frameProcessing = false;

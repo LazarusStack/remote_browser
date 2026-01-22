@@ -17,11 +17,11 @@ export const config = {
   },
   screencast: {
     format: 'jpeg', // JPEG is more widely supported than WebP in CDP
-    quality: 40, // Reduced from 85 for better performance (still looks great)
+    quality: 30,
     maxWidth: 1920,
     maxHeight: 1080,
-    everyNthFrame: 1, // Send every frame, we'll throttle on server side
-    minFrameInterval: 20 // ~50 FPS max (20ms = 50fps, very smooth) - can go to 16ms for 60fps if needed
+    everyNthFrame: 1, // Send every frame from CDP
+    minFrameInterval: 16 // ~60 FPS max (16ms = 60fps) - CDP encoding is the real bottleneck
   }
 };
 
