@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import io from 'socket.io-client'
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3000'
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'https://context-morning-velvet-phd.trycloudflare.com'
 
 export default function WebRTCTest() {
   const [socket, setSocket] = useState(null)
@@ -20,6 +20,7 @@ export default function WebRTCTest() {
 
   // Initialize socket connection
   useEffect(() => {
+    console.log('SOCKET_URL', SOCKET_URL)
     const newSocket = io(SOCKET_URL, {
       transports: ['websocket', 'polling']
     })
