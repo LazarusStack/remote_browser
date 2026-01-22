@@ -39,6 +39,30 @@ export function useViewport(socketRef, activeTab, offsetX, offsetY, screenshot) 
     }
   }, [activeTab]);
 
+  // Add wheel event listener with passive: false to allow preventDefault
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+
+    const wheelHandler = (e) => {
+      if (!activeTab || !socketRef.current) return;
+      e.preventDefault();
+      
+      socketRef.current.emit("scroll", {
+        tabId: activeTab,
+        deltaX: e.deltaX,
+        deltaY: e.deltaY
+      });
+    };
+
+    // Add event listener with passive: false to allow preventDefault
+    viewport.addEventListener('wheel', wheelHandler, { passive: false });
+
+    return () => {
+      viewport.removeEventListener('wheel', wheelHandler);
+    };
+  }, [activeTab, socketRef]);
+
   const calculateCoordinates = (e) => {
     if (!viewportRef.current) return null;
     
@@ -91,17 +115,6 @@ export function useViewport(socketRef, activeTab, offsetX, offsetY, screenshot) 
     });
   };
 
-  const handleWheel = (e) => {
-    if (!activeTab || !socketRef.current) return;
-    e.preventDefault();
-    
-    socketRef.current.emit("scroll", {
-      tabId: activeTab,
-      deltaX: e.deltaX,
-      deltaY: e.deltaY
-    });
-  };
-
   const handleKeyDown = (e) => {
     if (!activeTab || !socketRef.current) return;
     
@@ -138,7 +151,6 @@ export function useViewport(socketRef, activeTab, offsetX, offsetY, screenshot) 
     scaleRef,
     handleClick,
     handleMouseMove,
-    handleWheel,
     handleKeyDown
   };
 }

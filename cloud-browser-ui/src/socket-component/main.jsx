@@ -51,7 +51,6 @@ export default function Main() {
     scaleRef,
     handleClick,
     handleMouseMove,
-    handleWheel,
     handleKeyDown
   } = useViewport(socketRef, activeTab, offsetX, offsetY, screenshot);
   
@@ -153,7 +152,6 @@ export default function Main() {
             scaleRef={scaleRef}
             onClick={handleClick}
             onMouseMove={handleMouseMove}
-            onWheel={handleWheel}
             onKeyDown={handleKeyDown}
           />
         ) : (

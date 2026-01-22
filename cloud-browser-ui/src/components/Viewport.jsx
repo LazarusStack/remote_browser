@@ -8,7 +8,6 @@ export default function Viewport({
   scaleRef,
   onClick,
   onMouseMove,
-  onWheel,
   onKeyDown
 }) {
   return (
@@ -22,7 +21,6 @@ export default function Viewport({
         }}
         onClick={onClick}
         onMouseMove={onMouseMove}
-        onWheel={onWheel}
         onContextMenu={(e) => {
           e.preventDefault();
           onClick(e);
