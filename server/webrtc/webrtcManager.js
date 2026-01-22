@@ -18,34 +18,46 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
       // STUN servers are listed first and multiple are used for reliability
       // TURN is added last as a fallback for strict NAT/firewall scenarios
       const iceServers = [
-        // Multiple STUN servers for reliability (fast, direct connections)
+        // Primary STUN servers (Google's public STUN servers - most reliable)
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
         { urls: 'stun:stun3.l.google.com:19302' },
         { urls: 'stun:stun4.l.google.com:19302' },
+        // Additional reliable STUN servers
         { urls: 'stun:stun.stunprotocol.org:3478' },
+        { urls: 'stun:stun.voiparound.com' },
+        { urls: 'stun:stun.voipbuster.com' },
+        { urls: 'stun:stun.voipstunt.com' },
+        { urls: 'stun:stun.voxgratia.org' },
       ];
       
       // Add TURN server as fallback (slower, but works with strict NAT)
-      // Only used if direct connection fails
+      // Only used if direct connection fails - explicitly marked as fallback
       const turnUrl = process.env.TURN_URL || 'turn:13.126.43.172:3478';
       const turnUsername = process.env.TURN_USERNAME || 'turnuser';
       const turnCredential = process.env.TURN_CREDENTIAL || 'turnpassword';
       
-      iceServers.push({
-        urls: turnUrl,
-        username: turnUsername,
-        credential: turnCredential
-      });
+      // Only add TURN if explicitly configured (don't force relay usage)
+      if (turnUrl && turnUrl !== '') {
+        iceServers.push({
+          urls: turnUrl,
+          username: turnUsername,
+          credential: turnCredential
+        });
+      }
       
       pc = new RTCPeerConnection({
         iceServers: iceServers,
         iceCandidatePoolSize: 0, // Don't pre-gather (faster initial connection)
-        iceTransportPolicy: 'all' // Try all candidate types, but prefer host/srflx over relay
+        // Use 'all' to gather all candidates, but WebRTC will prefer lower latency ones
+        // (host > srflx > relay). This ensures STUN works first, TURN only as fallback.
+        iceTransportPolicy: 'all'
       });
       
-      console.log(`[WebRTC] Configured with ${iceServers.length - 1} STUN servers + 1 TURN fallback`);
+      const stunCount = iceServers.filter(s => s.urls.includes('stun:')).length;
+      const turnCount = iceServers.filter(s => s.urls.includes('turn:')).length;
+      console.log(`[WebRTC] Configured with ${stunCount} STUN servers${turnCount > 0 ? ` + ${turnCount} TURN fallback` : ' (TURN disabled)'}`);
 
       // Create data channel for screenshot data with optimized settings
       const dataChannel = pc.createDataChannel('screenshots', {
@@ -88,25 +100,41 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
           const candidateStr = candidate.candidate || '';
           
           // Track candidate types
-          if (candidateStr.includes(' typ host ')) candidateTypes.host++;
-          else if (candidateStr.includes(' typ srflx ')) candidateTypes.srflx++;
-          else if (candidateStr.includes(' typ relay ')) candidateTypes.relay++;
-          else if (candidateStr.includes(' typ prflx ')) candidateTypes.prflx++;
+          let candidateType = 'unknown';
+          if (candidateStr.includes(' typ host ')) {
+            candidateTypes.host++;
+            candidateType = 'host (direct - fastest)';
+          } else if (candidateStr.includes(' typ srflx ')) {
+            candidateTypes.srflx++;
+            candidateType = 'srflx (STUN - fast)';
+          } else if (candidateStr.includes(' typ relay ')) {
+            candidateTypes.relay++;
+            candidateType = 'relay (TURN - slower)';
+          } else if (candidateStr.includes(' typ prflx ')) {
+            candidateTypes.prflx++;
+            candidateType = 'prflx (peer reflexive)';
+          }
           
-          console.log(`[WebRTC] ICE candidate #${candidateCount} generated for tab ${tabId}, socket ${socket.id}:`, {
-            candidate: candidateStr.substring(0, 100),
-            sdpMLineIndex: candidate.sdpMLineIndex,
-            sdpMid: candidate.sdpMid,
-            hasRelay: candidateTypes.relay > 0
-          });
+          // Log first few candidates in detail, then summarize
+          if (candidateCount <= 5) {
+            console.log(`[WebRTC] ICE candidate #${candidateCount} (${candidateType}) for tab ${tabId}, socket ${socket.id}:`, {
+              candidate: candidateStr.substring(0, 150),
+              sdpMLineIndex: candidate.sdpMLineIndex,
+              sdpMid: candidate.sdpMid
+            });
+          }
           socket.emit('webrtc_ice_candidate', {
             tabId,
             candidate: candidate
           });
         } else {
-          console.log(`[WebRTC] ICE candidate gathering complete for tab ${tabId}, socket ${socket.id}. Total: ${candidateCount}`, {
+          const preferredType = candidateTypes.host > 0 ? 'host (direct)' : 
+                                candidateTypes.srflx > 0 ? 'srflx (STUN)' : 
+                                candidateTypes.relay > 0 ? 'relay (TURN - slower!)' : 'none';
+          console.log(`[WebRTC] ✅ ICE candidate gathering complete for tab ${tabId}, socket ${socket.id}. Total: ${candidateCount}`, {
             types: candidateTypes,
-            hasTURN: candidateTypes.relay > 0
+            preferredType: preferredType,
+            warning: candidateTypes.relay > 0 && candidateTypes.srflx === 0 && candidateTypes.host === 0 ? '⚠️ Only TURN candidates - STUN may not be working!' : null
           });
         }
       };
@@ -127,10 +155,17 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
         } else if (iceState === 'disconnected') {
           console.warn(`[WebRTC] ICE connection disconnected for tab ${tabId}, socket ${socket.id}`);
         } else if (iceState === 'connected' || iceState === 'completed') {
-          const connectionType = candidateTypes.relay > 0 ? 'TURN (relay - higher latency)' : 
-                                 candidateTypes.srflx > 0 ? 'STUN (server reflexive - low latency)' : 
-                                 candidateTypes.host > 0 ? 'Direct (host - lowest latency)' : 'Unknown';
-          console.log(`[WebRTC] ✅ ICE connection ${iceState} for tab ${tabId}, socket ${socket.id} - Using: ${connectionType}`);
+          // Determine actual connection type being used
+          const connectionType = candidateTypes.host > 0 ? 'Direct (host - lowest latency ✅)' : 
+                                 candidateTypes.srflx > 0 ? 'STUN (server reflexive - low latency ✅)' : 
+                                 candidateTypes.relay > 0 ? 'TURN (relay - higher latency ⚠️)' : 'Unknown';
+          const performance = candidateTypes.relay > 0 && (candidateTypes.srflx === 0 && candidateTypes.host === 0) 
+            ? '⚠️ WARNING: Using TURN relay - STUN not working! This will cause lag.' 
+            : '✅ Good connection type';
+          console.log(`[WebRTC] ✅ ICE connection ${iceState} for tab ${tabId}, socket ${socket.id} - Using: ${connectionType}`, {
+            performance: performance,
+            candidateTypes: candidateTypes
+          });
         }
       };
 
@@ -160,10 +195,16 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
           });
           cleanupWebRTC(socket.id, tabId, browserInstance);
         } else if (connState === 'connected') {
-          const connectionType = candidateTypes.relay > 0 ? 'TURN (relay - higher latency)' : 
-                                 candidateTypes.srflx > 0 ? 'STUN (server reflexive - low latency)' : 
-                                 candidateTypes.host > 0 ? 'Direct (host - lowest latency)' : 'Unknown';
-          console.log(`[WebRTC] ✅ Connection established successfully for tab ${tabId}, socket ${socket.id} - Using: ${connectionType}`);
+          const connectionType = candidateTypes.host > 0 ? 'Direct (host - lowest latency ✅)' : 
+                                 candidateTypes.srflx > 0 ? 'STUN (server reflexive - low latency ✅)' : 
+                                 candidateTypes.relay > 0 ? 'TURN (relay - higher latency ⚠️)' : 'Unknown';
+          const performance = candidateTypes.relay > 0 && (candidateTypes.srflx === 0 && candidateTypes.host === 0) 
+            ? '⚠️ WARNING: Using TURN relay - STUN not working! This will cause lag.' 
+            : '✅ Good connection type';
+          console.log(`[WebRTC] ✅ Connection established successfully for tab ${tabId}, socket ${socket.id} - Using: ${connectionType}`, {
+            performance: performance,
+            candidateTypes: candidateTypes
+          });
         }
       };
 

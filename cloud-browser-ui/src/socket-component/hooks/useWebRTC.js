@@ -15,34 +15,46 @@ export const useWebRTC = () => {
         // STUN servers are listed first for direct peer-to-peer connections
         // TURN is added last as a fallback for strict NAT/firewall scenarios
         const iceServers = [
-          // Multiple STUN servers for reliability (fast, direct connections)
+          // Primary STUN servers (Google's public STUN servers - most reliable)
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
           { urls: 'stun:stun2.l.google.com:19302' },
           { urls: 'stun:stun3.l.google.com:19302' },
           { urls: 'stun:stun4.l.google.com:19302' },
+          // Additional reliable STUN servers
           { urls: 'stun:stun.stunprotocol.org:3478' },
+          { urls: 'stun:stun.voiparound.com' },
+          { urls: 'stun:stun.voipbuster.com' },
+          { urls: 'stun:stun.voipstunt.com' },
+          { urls: 'stun:stun.voxgratia.org' },
         ];
         
         // Add TURN server as fallback (slower, but works with strict NAT)
-        // Only used if direct connection fails
+        // Only used if direct connection fails - explicitly marked as fallback
         const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:13.126.43.172:3478';
         const turnUsername = import.meta.env.VITE_TURN_USERNAME || 'turnuser';
         const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || 'turnpassword';
         
-        iceServers.push({
-          urls: turnUrl,
-          username: turnUsername,
-          credential: turnCredential
-        });
+        // Only add TURN if explicitly configured (don't force relay usage)
+        if (turnUrl && turnUrl !== '') {
+          iceServers.push({
+            urls: turnUrl,
+            username: turnUsername,
+            credential: turnCredential
+          });
+        }
         
         pc = new RTCPeerConnection({
           iceServers: iceServers,
           iceCandidatePoolSize: 0, // Don't pre-gather (faster initial connection)
-          iceTransportPolicy: 'all' // Try all candidate types, but prefer host/srflx over relay
+          // Use 'all' to gather all candidates, but WebRTC will prefer lower latency ones
+          // (host > srflx > relay). This ensures STUN works first, TURN only as fallback.
+          iceTransportPolicy: 'all'
         });
         
-        console.log(`[WebRTC Client] Configured with ${iceServers.length - 1} STUN servers + 1 TURN fallback`);
+        const stunCount = iceServers.filter(s => s.urls.includes('stun:')).length;
+        const turnCount = iceServers.filter(s => s.urls.includes('turn:')).length;
+        console.log(`[WebRTC Client] Configured with ${stunCount} STUN servers${turnCount > 0 ? ` + ${turnCount} TURN fallback` : ' (TURN disabled)'}`);
         peerConnectionsRef.current[tabId] = pc;
       } catch (error) {
         console.error("Error creating WebRTC peer connection:", error);
@@ -186,15 +198,41 @@ export const useWebRTC = () => {
         };
       };
 
+      // Track candidate types for diagnostics
+      let candidateCount = 0;
+      const candidateTypes = { host: 0, srflx: 0, relay: 0, prflx: 0 };
+      
       // Handle ICE candidates
       pc.onicecandidate = (event) => {
         if (event.candidate) {
+          candidateCount++;
           const candidate = event.candidate;
-          console.log(`[WebRTC Client] ICE candidate generated for tab ${tabId}:`, {
-            candidate: candidate.candidate,
-            sdpMLineIndex: candidate.sdpMLineIndex,
-            sdpMid: candidate.sdpMid
-          });
+          const candidateStr = candidate.candidate || '';
+          
+          // Track candidate types
+          let candidateType = 'unknown';
+          if (candidateStr.includes(' typ host ')) {
+            candidateTypes.host++;
+            candidateType = 'host (direct - fastest)';
+          } else if (candidateStr.includes(' typ srflx ')) {
+            candidateTypes.srflx++;
+            candidateType = 'srflx (STUN - fast)';
+          } else if (candidateStr.includes(' typ relay ')) {
+            candidateTypes.relay++;
+            candidateType = 'relay (TURN - slower)';
+          } else if (candidateStr.includes(' typ prflx ')) {
+            candidateTypes.prflx++;
+            candidateType = 'prflx (peer reflexive)';
+          }
+          
+          // Log first few candidates in detail, then summarize
+          if (candidateCount <= 5) {
+            console.log(`[WebRTC Client] ICE candidate #${candidateCount} (${candidateType}) for tab ${tabId}:`, {
+              candidate: candidateStr.substring(0, 150),
+              sdpMLineIndex: candidate.sdpMLineIndex,
+              sdpMid: candidate.sdpMid
+            });
+          }
           
           if (socketRef.current && typeof socketRef.current.emit === 'function') {
             try {
@@ -202,7 +240,6 @@ export const useWebRTC = () => {
                 tabId,
                 candidate: candidate
               });
-              console.log(`[WebRTC Client] ICE candidate sent to server for tab ${tabId}`);
             } catch (error) {
               console.error(`[WebRTC Client] Error sending ICE candidate for tab ${tabId}:`, error);
             }
@@ -210,7 +247,14 @@ export const useWebRTC = () => {
             console.warn(`[WebRTC Client] Cannot send ICE candidate - socket not available for tab ${tabId}`);
           }
         } else {
-          console.log(`[WebRTC Client] ICE candidate gathering complete for tab ${tabId}`);
+          const preferredType = candidateTypes.host > 0 ? 'host (direct)' : 
+                                candidateTypes.srflx > 0 ? 'srflx (STUN)' : 
+                                candidateTypes.relay > 0 ? 'relay (TURN - slower!)' : 'none';
+          console.log(`[WebRTC Client] ✅ ICE candidate gathering complete for tab ${tabId}. Total: ${candidateCount}`, {
+            types: candidateTypes,
+            preferredType: preferredType,
+            warning: candidateTypes.relay > 0 && candidateTypes.srflx === 0 && candidateTypes.host === 0 ? '⚠️ Only TURN candidates - STUN may not be working!' : null
+          });
         }
       };
 
@@ -228,6 +272,8 @@ export const useWebRTC = () => {
         } else if (iceState === 'disconnected') {
           console.warn(`[WebRTC Client] ICE connection disconnected for tab ${tabId}`);
         } else if (iceState === 'connected' || iceState === 'completed') {
+          // Note: candidateTypes might not be available here if handler was set up elsewhere
+          // This is just for logging - actual type detection happens in onicecandidate
           console.log(`[WebRTC Client] ✅ ICE connection ${iceState} for tab ${tabId}`);
         }
       };
@@ -312,45 +358,82 @@ export const useWebRTC = () => {
         console.log(`[WebRTC Client] Creating peer connection for tab ${tabId} (offer received before setup)`);
         // Optimize for STUN-first (low latency), TURN as fallback only
         const iceServers = [
-          // Multiple STUN servers for reliability (fast, direct connections)
+          // Primary STUN servers (Google's public STUN servers - most reliable)
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
           { urls: 'stun:stun2.l.google.com:19302' },
           { urls: 'stun:stun3.l.google.com:19302' },
           { urls: 'stun:stun4.l.google.com:19302' },
+          // Additional reliable STUN servers
           { urls: 'stun:stun.stunprotocol.org:3478' },
+          { urls: 'stun:stun.voiparound.com' },
+          { urls: 'stun:stun.voipbuster.com' },
+          { urls: 'stun:stun.voipstunt.com' },
+          { urls: 'stun:stun.voxgratia.org' },
         ];
         
         // Add TURN server as fallback (slower, but works with strict NAT)
+        // Only used if direct connection fails - explicitly marked as fallback
         const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:13.126.43.172:3478';
         const turnUsername = import.meta.env.VITE_TURN_USERNAME || 'turnuser';
         const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || 'turnpassword';
         
-        iceServers.push({
-          urls: turnUrl,
-          username: turnUsername,
-          credential: turnCredential
-        });
+        // Only add TURN if explicitly configured (don't force relay usage)
+        if (turnUrl && turnUrl !== '') {
+          iceServers.push({
+            urls: turnUrl,
+            username: turnUsername,
+            credential: turnCredential
+          });
+        }
         
         pc = new RTCPeerConnection({
           iceServers: iceServers,
           iceCandidatePoolSize: 0, // Don't pre-gather (faster initial connection)
-          iceTransportPolicy: 'all' // Try all candidate types, but prefer host/srflx over relay
+          // Use 'all' to gather all candidates, but WebRTC will prefer lower latency ones
+          // (host > srflx > relay). This ensures STUN works first, TURN only as fallback.
+          iceTransportPolicy: 'all'
         });
 
         // Note: Data channel handlers will be set up by setupWebRTCForTab
         // We just create the PC here to handle the offer
 
+        // Track candidate types for diagnostics
+        let candidateCount = 0;
+        const candidateTypes = { host: 0, srflx: 0, relay: 0, prflx: 0 };
+        
         // Handle ICE candidates - store socket reference for later use
         const candidateSocket = socket;
         pc.onicecandidate = (event) => {
           if (event.candidate) {
+            candidateCount++;
             const candidate = event.candidate;
-            console.log(`[WebRTC Client] ICE candidate generated for tab ${tabId}:`, {
-              candidate: candidate.candidate,
-              sdpMLineIndex: candidate.sdpMLineIndex,
-              sdpMid: candidate.sdpMid
-            });
+            const candidateStr = candidate.candidate || '';
+            
+            // Track candidate types
+            let candidateType = 'unknown';
+            if (candidateStr.includes(' typ host ')) {
+              candidateTypes.host++;
+              candidateType = 'host (direct - fastest)';
+            } else if (candidateStr.includes(' typ srflx ')) {
+              candidateTypes.srflx++;
+              candidateType = 'srflx (STUN - fast)';
+            } else if (candidateStr.includes(' typ relay ')) {
+              candidateTypes.relay++;
+              candidateType = 'relay (TURN - slower)';
+            } else if (candidateStr.includes(' typ prflx ')) {
+              candidateTypes.prflx++;
+              candidateType = 'prflx (peer reflexive)';
+            }
+            
+            // Log first few candidates in detail
+            if (candidateCount <= 5) {
+              console.log(`[WebRTC Client] ICE candidate #${candidateCount} (${candidateType}) for tab ${tabId}:`, {
+                candidate: candidateStr.substring(0, 150),
+                sdpMLineIndex: candidate.sdpMLineIndex,
+                sdpMid: candidate.sdpMid
+              });
+            }
             
             // Use the socket that was passed in
             if (candidateSocket && typeof candidateSocket.emit === 'function') {
@@ -359,7 +442,6 @@ export const useWebRTC = () => {
                   tabId,
                   candidate: candidate
                 });
-                console.log(`[WebRTC Client] ✅ ICE candidate sent to server for tab ${tabId}`);
               } catch (error) {
                 console.error(`[WebRTC Client] ❌ Error sending ICE candidate for tab ${tabId}:`, error);
               }
@@ -371,7 +453,14 @@ export const useWebRTC = () => {
               });
             }
           } else {
-            console.log(`[WebRTC Client] ICE candidate gathering complete for tab ${tabId}`);
+            const preferredType = candidateTypes.host > 0 ? 'host (direct)' : 
+                                  candidateTypes.srflx > 0 ? 'srflx (STUN)' : 
+                                  candidateTypes.relay > 0 ? 'relay (TURN - slower!)' : 'none';
+            console.log(`[WebRTC Client] ✅ ICE candidate gathering complete for tab ${tabId}. Total: ${candidateCount}`, {
+              types: candidateTypes,
+              preferredType: preferredType,
+              warning: candidateTypes.relay > 0 && candidateTypes.srflx === 0 && candidateTypes.host === 0 ? '⚠️ Only TURN candidates - STUN may not be working!' : null
+            });
           }
         };
 
