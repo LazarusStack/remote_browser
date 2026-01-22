@@ -25,7 +25,7 @@ export const config = {
   }
 };
 
-// Mock browser list - in future, fetch from database
+// Mock browser list - in future, fetch from database 
 export const browserList = [
   { id: "browser_1", code: "ABC123", name: "Browser 1" },
   { id: "browser_2", code: "XYZ789", name: "Browser 2" },
