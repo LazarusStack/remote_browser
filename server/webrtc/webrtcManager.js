@@ -14,25 +14,38 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
     // Create or reuse peer connection for this tab
     let pc = browserInstance.webrtcConnections[socket.id][tabId];
     if (!pc) {
-      // Use STUN and TURN servers for better connectivity
-      // TURN server is needed when direct connection fails (NAT/firewall issues)
+      // Optimize for STUN-first (low latency), TURN as fallback only
+      // STUN servers are listed first and multiple are used for reliability
+      // TURN is added last as a fallback for strict NAT/firewall scenarios
+      const iceServers = [
+        // Multiple STUN servers for reliability (fast, direct connections)
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
+        { urls: 'stun:stun.stunprotocol.org:3478' },
+      ];
+      
+      // Add TURN server as fallback (slower, but works with strict NAT)
+      // Only used if direct connection fails
       const turnUrl = process.env.TURN_URL || 'turn:13.126.43.172:3478';
       const turnUsername = process.env.TURN_USERNAME || 'turnuser';
       const turnCredential = process.env.TURN_CREDENTIAL || 'turnpassword';
       
-      pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          {
-            urls: turnUrl,
-            username: turnUsername,
-            credential: turnCredential
-          }
-        ]
+      iceServers.push({
+        urls: turnUrl,
+        username: turnUsername,
+        credential: turnCredential
       });
       
-      console.log(`[WebRTC] TURN server configured: ${turnUrl}`);
+      pc = new RTCPeerConnection({
+        iceServers: iceServers,
+        iceCandidatePoolSize: 0, // Don't pre-gather (faster initial connection)
+        iceTransportPolicy: 'all' // Try all candidate types, but prefer host/srflx over relay
+      });
+      
+      console.log(`[WebRTC] Configured with ${iceServers.length - 1} STUN servers + 1 TURN fallback`);
 
       // Create data channel for screenshot data with optimized settings
       const dataChannel = pc.createDataChannel('screenshots', {
@@ -114,7 +127,10 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
         } else if (iceState === 'disconnected') {
           console.warn(`[WebRTC] ICE connection disconnected for tab ${tabId}, socket ${socket.id}`);
         } else if (iceState === 'connected' || iceState === 'completed') {
-          console.log(`[WebRTC] ICE connection ${iceState} for tab ${tabId}, socket ${socket.id}`);
+          const connectionType = candidateTypes.relay > 0 ? 'TURN (relay - higher latency)' : 
+                                 candidateTypes.srflx > 0 ? 'STUN (server reflexive - low latency)' : 
+                                 candidateTypes.host > 0 ? 'Direct (host - lowest latency)' : 'Unknown';
+          console.log(`[WebRTC] ✅ ICE connection ${iceState} for tab ${tabId}, socket ${socket.id} - Using: ${connectionType}`);
         }
       };
 
@@ -144,7 +160,10 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
           });
           cleanupWebRTC(socket.id, tabId, browserInstance);
         } else if (connState === 'connected') {
-          console.log(`[WebRTC] ✅ Connection established successfully for tab ${tabId}, socket ${socket.id}`);
+          const connectionType = candidateTypes.relay > 0 ? 'TURN (relay - higher latency)' : 
+                                 candidateTypes.srflx > 0 ? 'STUN (server reflexive - low latency)' : 
+                                 candidateTypes.host > 0 ? 'Direct (host - lowest latency)' : 'Unknown';
+          console.log(`[WebRTC] ✅ Connection established successfully for tab ${tabId}, socket ${socket.id} - Using: ${connectionType}`);
         }
       };
 

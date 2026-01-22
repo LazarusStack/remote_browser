@@ -11,23 +11,38 @@ export const useWebRTC = () => {
     // If PC doesn't exist, create it
     if (!pc) {
       try {
-        // Use STUN and TURN servers for better connectivity
-        // TURN server is needed when direct connection fails (NAT/firewall issues)
+        // Optimize for STUN-first (low latency), TURN as fallback only
+        // STUN servers are listed first for direct peer-to-peer connections
+        // TURN is added last as a fallback for strict NAT/firewall scenarios
+        const iceServers = [
+          // Multiple STUN servers for reliability (fast, direct connections)
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun4.l.google.com:19302' },
+          { urls: 'stun:stun.stunprotocol.org:3478' },
+        ];
+        
+        // Add TURN server as fallback (slower, but works with strict NAT)
+        // Only used if direct connection fails
         const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:13.126.43.172:3478';
         const turnUsername = import.meta.env.VITE_TURN_USERNAME || 'turnuser';
         const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || 'turnpassword';
         
-        pc = new RTCPeerConnection({
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            {
-              urls: turnUrl,
-              username: turnUsername,
-              credential: turnCredential
-            }
-          ]
+        iceServers.push({
+          urls: turnUrl,
+          username: turnUsername,
+          credential: turnCredential
         });
+        
+        pc = new RTCPeerConnection({
+          iceServers: iceServers,
+          iceCandidatePoolSize: 0, // Don't pre-gather (faster initial connection)
+          iceTransportPolicy: 'all' // Try all candidate types, but prefer host/srflx over relay
+        });
+        
+        console.log(`[WebRTC Client] Configured with ${iceServers.length - 1} STUN servers + 1 TURN fallback`);
         peerConnectionsRef.current[tabId] = pc;
       } catch (error) {
         console.error("Error creating WebRTC peer connection:", error);
@@ -295,22 +310,32 @@ export const useWebRTC = () => {
       // If PC doesn't exist yet, create it now (race condition fix)
       if (!pc) {
         console.log(`[WebRTC Client] Creating peer connection for tab ${tabId} (offer received before setup)`);
-        // Use STUN and TURN servers for better connectivity
-        // TURN server is needed when direct connection fails (NAT/firewall issues)
+        // Optimize for STUN-first (low latency), TURN as fallback only
+        const iceServers = [
+          // Multiple STUN servers for reliability (fast, direct connections)
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun4.l.google.com:19302' },
+          { urls: 'stun:stun.stunprotocol.org:3478' },
+        ];
+        
+        // Add TURN server as fallback (slower, but works with strict NAT)
         const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:13.126.43.172:3478';
         const turnUsername = import.meta.env.VITE_TURN_USERNAME || 'turnuser';
         const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || 'turnpassword';
         
+        iceServers.push({
+          urls: turnUrl,
+          username: turnUsername,
+          credential: turnCredential
+        });
+        
         pc = new RTCPeerConnection({
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            {
-              urls: turnUrl,
-              username: turnUsername,
-              credential: turnCredential
-            }
-          ]
+          iceServers: iceServers,
+          iceCandidatePoolSize: 0, // Don't pre-gather (faster initial connection)
+          iceTransportPolicy: 'all' // Try all candidate types, but prefer host/srflx over relay
         });
 
         // Note: Data channel handlers will be set up by setupWebRTCForTab
