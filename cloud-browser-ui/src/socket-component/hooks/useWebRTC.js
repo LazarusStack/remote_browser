@@ -13,7 +13,7 @@ export const useWebRTC = () => {
       try {
         // Use STUN and TURN servers for better connectivity
         // TURN server is needed when direct connection fails (NAT/firewall issues)
-        const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:13.232.240.127:3478';
+        const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:13.126.43.172:3478';
         const turnUsername = import.meta.env.VITE_TURN_USERNAME || 'turnuser';
         const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || 'turnpassword';
         
@@ -297,7 +297,7 @@ export const useWebRTC = () => {
         console.log(`[WebRTC Client] Creating peer connection for tab ${tabId} (offer received before setup)`);
         // Use STUN and TURN servers for better connectivity
         // TURN server is needed when direct connection fails (NAT/firewall issues)
-        const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:13.232.240.127:3478';
+        const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:13.126.43.172:3478';
         const turnUsername = import.meta.env.VITE_TURN_USERNAME || 'turnuser';
         const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || 'turnpassword';
         
