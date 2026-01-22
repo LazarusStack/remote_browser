@@ -70,8 +70,21 @@ export function setupWebRTCHandlers(socket) {
           testConn.remoteCandidateCount++;
           
           await testConn.pc.addIceCandidate(candidate);
+          
+          // Extract IP and port for diagnostics
+          const candidateStr = candidate.candidate || '';
+          const ipMatch = candidateStr.match(/(\d+\.\d+\.\d+\.\d+)/);
+          const portMatch = candidateStr.match(/port (\d+)/);
+          const ip = ipMatch ? ipMatch[1] : 'unknown';
+          const port = portMatch ? portMatch[1] : 'unknown';
+          
           console.log(`[WebRTC Test] Remote ICE candidate #${testConn.remoteCandidateCount} added for socket ${socket.id}:`, {
-            candidate: candidate.candidate?.substring(0, 100) || 'unknown',
+            type: candidateStr.includes(' typ host ') ? 'host' : 
+                  candidateStr.includes(' typ srflx ') ? 'srflx' :
+                  candidateStr.includes(' typ relay ') ? 'relay' : 'prflx',
+            ip: ip,
+            port: port,
+            candidate: candidateStr.substring(0, 150),
             sdpMLineIndex: candidate.sdpMLineIndex,
             sdpMid: candidate.sdpMid
           });
@@ -215,8 +228,19 @@ export function setupWebRTCHandlers(socket) {
           else if (candidate.includes(' typ relay ')) candidateTypes.relay++;
           else if (candidate.includes(' typ prflx ')) candidateTypes.prflx++;
           
-          console.log(`[WebRTC Test] Local ICE candidate #${localCandidateCount} (${event.candidate.type || 'unknown'}) for socket ${socket.id}:`, {
-            candidate: candidate.substring(0, 100), // Log first 100 chars
+          // Extract IP and port for diagnostics
+          const ipMatch = candidate.match(/(\d+\.\d+\.\d+\.\d+)/);
+          const portMatch = candidate.match(/port (\d+)/);
+          const ip = ipMatch ? ipMatch[1] : 'unknown';
+          const port = portMatch ? portMatch[1] : 'unknown';
+          
+          console.log(`[WebRTC Test] Local ICE candidate #${localCandidateCount} for socket ${socket.id}:`, {
+            type: candidate.includes(' typ host ') ? 'host' : 
+                  candidate.includes(' typ srflx ') ? 'srflx' :
+                  candidate.includes(' typ relay ') ? 'relay' : 'prflx',
+            ip: ip,
+            port: port,
+            candidate: candidate.substring(0, 150),
             sdpMLineIndex: event.candidate.sdpMLineIndex,
             sdpMid: event.candidate.sdpMid
           });
@@ -227,7 +251,9 @@ export function setupWebRTCHandlers(socket) {
         } else {
           console.log(`[WebRTC Test] ICE candidate gathering complete for socket ${socket.id}. Total candidates: ${localCandidateCount}`, {
             types: candidateTypes,
-            gatheringState: pc.iceGatheringState
+            gatheringState: pc.iceGatheringState,
+            connectionState: pc.connectionState,
+            iceConnectionState: pc.iceConnectionState
           });
         }
       };
@@ -252,14 +278,17 @@ export function setupWebRTCHandlers(socket) {
         
         if (iceState === 'failed') {
           console.error(`[WebRTC Test] ❌ ICE connection failed for socket ${socket.id}. Possible causes:`, {
-            networkIssue: 'Firewall/NAT blocking UDP traffic',
-            stunIssue: 'STUN server unreachable or blocked',
+            networkIssue: 'Firewall/NAT blocking UDP traffic - AWS Security Group may not allow inbound UDP',
+            stunIssue: candidateTypes.srflx === 0 ? 'STUN server not working - no srflx candidates' : 'STUN working (srflx candidates found)',
+            natIssue: candidateTypes.host > 0 && candidateTypes.srflx > 0 ? 'Both host and srflx candidates found, but connection failed - likely symmetric NAT or firewall blocking' : 'Insufficient candidate types',
             candidateCounts: {
               local: localCandidateCount,
               remote: testConn.remoteCandidateCount || 0,
               types: candidateTypes
             },
-            recommendation: 'Check firewall rules allow UDP traffic, verify STUN servers are reachable, ensure AWS Security Group allows inbound UDP (ports 10000-20000)'
+            recommendation: candidateTypes.srflx === 0 
+              ? 'CRITICAL: STUN not working - check outbound UDP to port 19302, verify STUN servers reachable'
+              : 'CRITICAL: Configure AWS Security Group to allow inbound UDP ports 10000-20000. Both sides may be behind symmetric NAT - direct connection may not be possible without TURN'
           });
         } else if (iceState === 'connected' || iceState === 'completed') {
           console.log(`[WebRTC Test] ✅ ICE connection ${iceState} for socket ${socket.id}`);
@@ -281,6 +310,10 @@ export function setupWebRTCHandlers(socket) {
         });
         
         if (connState === 'failed' || connState === 'closed') {
+          const hasSrflx = candidateTypes.srflx > 0;
+          const hasHost = candidateTypes.host > 0;
+          const hasBothCandidates = localCandidateCount > 0 && (testConn.remoteCandidateCount || 0) > 0;
+          
           console.error(`[WebRTC Test] ❌ Connection ${connState} for socket ${socket.id}. Final diagnostics:`, {
             iceConnectionState: iceState,
             iceGatheringState: gatheringState,
@@ -290,7 +323,21 @@ export function setupWebRTCHandlers(socket) {
               remote: testConn.remoteCandidateCount || 0,
               types: candidateTypes
             },
-            recommendation: 'Check firewall rules (AWS Security Group should allow inbound UDP ports 10000-20000), verify STUN servers are reachable, check network connectivity'
+            analysis: {
+              stunWorking: hasSrflx,
+              hasLocalCandidates: hasHost,
+              candidatesExchanged: hasBothCandidates,
+              likelyCause: !hasSrflx 
+                ? 'STUN server not reachable or blocked'
+                : !hasBothCandidates
+                ? 'ICE candidates not exchanged properly'
+                : 'AWS Security Group blocking inbound UDP OR symmetric NAT preventing direct connection'
+            },
+            recommendation: !hasSrflx
+              ? 'CRITICAL: Fix STUN - check outbound UDP to port 19302, verify firewall allows outbound UDP'
+              : !hasBothCandidates
+              ? 'CRITICAL: ICE candidates not exchanged - check WebSocket connection and signaling'
+              : 'CRITICAL: Configure AWS Security Group inbound rules: Allow UDP ports 10000-20000 from 0.0.0.0/0. If still fails, may need TURN server for symmetric NAT traversal.'
           });
           testWebRTCConnections.delete(socket.id);
         } else if (connState === 'connected') {
