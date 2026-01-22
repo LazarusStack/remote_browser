@@ -1,5 +1,32 @@
 import { useRef } from 'react';
 
+// Get ICE servers configuration - using multiple STUN servers and local TURN server
+function getIceServers() {
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:stun.stunprotocol.org:3478' },
+  ];
+
+  // Add TURN server if configured (from environment variables or default to EC2 TURN server)
+  const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:13.126.43.172:3478';
+  const turnUsername = import.meta.env.VITE_TURN_USERNAME || 'turnuser';
+  const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || 'turnpassword';
+
+  iceServers.push({
+    urls: turnUrl,
+    username: turnUsername,
+    credential: turnCredential
+  });
+  
+  console.log(`[WebRTC Client] TURN server configured: ${turnUrl}`);
+
+  return iceServers;
+}
+
 export const useWebRTC = () => {
   const peerConnectionsRef = useRef({}); // tabId -> RTCPeerConnection
   const dataChannelsRef = useRef({}); // tabId -> DataChannel
@@ -12,14 +39,7 @@ export const useWebRTC = () => {
       try {
         
         pc = new RTCPeerConnection({
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun3.l.google.com:19302' },
-            { urls: 'stun:stun4.l.google.com:19302' },
-            { urls: 'stun:stun.stunprotocol.org:3478' },
-          ],
+          iceServers: getIceServers(),
           iceCandidatePoolSize: 10,
           iceTransportPolicy: 'all'
         });
@@ -222,16 +242,8 @@ export const useWebRTC = () => {
       // If PC doesn't exist yet, create it now (race condition fix)
       if (!pc) {
         console.log(`[WebRTC Client] Creating peer connection for tab ${tabId} (offer received before setup)`);
-        // Use STUN servers only for faster connections - multiple servers for better connectivity
         pc = new RTCPeerConnection({
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun3.l.google.com:19302' },
-            { urls: 'stun:stun4.l.google.com:19302' },
-            { urls: 'stun:stun.stunprotocol.org:3478' },
-          ],
+          iceServers: getIceServers(),
           iceCandidatePoolSize: 10,
           iceTransportPolicy: 'all'
         });

@@ -1,6 +1,33 @@
 import wrtc from "@koush/wrtc";
 const { RTCPeerConnection, RTCSessionDescription } = wrtc;
 
+// Get ICE servers configuration - using multiple STUN servers and local TURN server
+function getIceServers() {
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:stun.stunprotocol.org:3478' },
+  ];
+
+  // Add local TURN server (coturn running on this EC2 instance)
+  const turnUrl = process.env.TURN_URL || 'turn:13.126.43.172:3478';
+  const turnUsername = process.env.TURN_USERNAME || 'turnuser';
+  const turnCredential = process.env.TURN_CREDENTIAL || 'turnpassword';
+
+  iceServers.push({
+    urls: turnUrl,
+    username: turnUsername,
+    credential: turnCredential
+  });
+  
+  console.log(`[WebRTC] TURN server configured: ${turnUrl}`);
+
+  return iceServers;
+}
+
 // Setup WebRTC connection for a client viewing a tab
 export async function setupWebRTC(socket, tabId, browserInstance) {
   try {
@@ -16,16 +43,9 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
     if (!pc) {
       
       pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          { urls: 'stun:stun3.l.google.com:19302' },
-          { urls: 'stun:stun4.l.google.com:19302' },
-          { urls: 'stun:stun.stunprotocol.org:3478' },
-        ],
+        iceServers: getIceServers(),
         iceCandidatePoolSize: 10, // Pre-gather more candidates for better connectivity
-        iceTransportPolicy: 'all' // Allow all candidate types (host, srflx, but not relay since we don't have TURN)
+        iceTransportPolicy: 'all' // Allow all candidate types (host, srflx, relay)
       });
 
       // Create data channel for screenshot data

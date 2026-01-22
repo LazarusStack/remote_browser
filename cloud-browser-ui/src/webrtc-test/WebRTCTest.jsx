@@ -3,6 +3,33 @@ import io from 'socket.io-client'
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'https://context-morning-velvet-phd.trycloudflare.com'
 
+// Get ICE servers configuration - using multiple STUN servers and local TURN server
+function getIceServers() {
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:stun.stunprotocol.org:3478' },
+  ];
+
+  // Add TURN server if configured (from environment variables or default to EC2 TURN server)
+  const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:13.126.43.172:3478';
+  const turnUsername = import.meta.env.VITE_TURN_USERNAME || 'turnuser';
+  const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || 'turnpassword';
+
+  iceServers.push({
+    urls: turnUrl,
+    username: turnUsername,
+    credential: turnCredential
+  });
+  
+  console.log(`[WebRTC Test] TURN server configured: ${turnUrl}`);
+
+  return iceServers;
+}
+
 export default function WebRTCTest() {
   const [socket, setSocket] = useState(null)
   const [isConnected, setIsConnected] = useState(false)
@@ -99,19 +126,9 @@ export default function WebRTCTest() {
       }
       
       // Otherwise, create a new connection (initial offer)
-      // Get ICE servers - multiple STUN servers for better connectivity
-      const iceServers = [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' },
-        { urls: 'stun:stun.stunprotocol.org:3478' },
-      ]
-      
-      // Create peer connection with optimized settings for STUN-only
+      // Create peer connection with optimized settings
       const pc = new RTCPeerConnection({ 
-        iceServers,
+        iceServers: getIceServers(),
         iceCandidatePoolSize: 10, // Pre-gather more candidates
         iceTransportPolicy: 'all' // Allow all candidate types
       })

@@ -5,7 +5,7 @@ import { getBrowserInstance } from '../browser/browserManager.js';
 // Store test WebRTC connections (socket.id -> { pc, dataChannel })
 const testWebRTCConnections = new Map();
 
-// Get ICE servers configuration - using multiple STUN servers for better connectivity
+// Get ICE servers configuration - using multiple STUN servers and local TURN server
 function getIceServers() {
   const iceServers = [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -18,6 +18,19 @@ function getIceServers() {
     { urls: 'stun:stun.voiparound.com' },
     { urls: 'stun:stun.voipbuster.com' }
   ];
+
+  // Add local TURN server (coturn running on this EC2 instance)
+  const turnUrl = process.env.TURN_URL || 'turn:13.126.43.172:3478';
+  const turnUsername = process.env.TURN_USERNAME || 'turnuser';
+  const turnCredential = process.env.TURN_CREDENTIAL || 'turnpassword';
+
+  iceServers.push({
+    urls: turnUrl,
+    username: turnUsername,
+    credential: turnCredential
+  });
+  
+  console.log(`[WebRTC] TURN server configured: ${turnUrl}`);
 
   return iceServers;
 }
