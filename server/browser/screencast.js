@@ -4,16 +4,18 @@ import { config } from '../config/index.js';
 import zlib from 'zlib';
 import { promisify } from 'util';
 import crypto from 'crypto';
+import { sendBinary, findWebSocketById } from '../websocket/wsServer.js';
 
 const gzip = promisify(zlib.gzip);
 
 // Per-client frame tracking to prevent overwhelming slow connections
 const clientFrameQueues = new Map(); // socketId -> { pendingFrames, lastSentTime, isProcessing }
 
+
 /**
  * Start CDP screencast for a tab
  */
-export async function startCDPScreencast(socket, tabId, browserInstance, io) {
+export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
   const page = browserInstance.pages[tabId];
   if (!page || page.isClosed()) return;
 
@@ -136,16 +138,17 @@ export async function startCDPScreencast(socket, tabId, browserInstance, io) {
             const viewers = browserInstance.tabViewers[tabId] || new Set();
             const sendPromises = [];
             
-            viewers.forEach(socketId => {
-              const viewerSocket = io.sockets.sockets.get(socketId);
-              if (!viewerSocket || !viewerSocket.connected) {
+            viewers.forEach(connectionId => {
+              // Find WebSocket connection
+              const viewerWS = findWebSocketById(connectionId);
+              if (!viewerWS || viewerWS.readyState !== 1) { // 1 = OPEN
                 // Clean up disconnected viewers
-                viewers.delete(socketId);
-                clientFrameQueues.delete(socketId);
+                viewers.delete(connectionId);
+                clientFrameQueues.delete(connectionId);
                 return;
               }
 
-              const clientQueue = clientFrameQueues.get(socketId);
+              const clientQueue = clientFrameQueues.get(connectionId);
               if (!clientQueue) return;
 
               // Skip if client has too many pending frames (backpressure)
@@ -163,36 +166,47 @@ export async function startCDPScreencast(socket, tabId, browserInstance, io) {
               clientQueue.pendingFrames++;
               clientQueue.lastSentTime = now;
 
-              // Send frame asynchronously
-              const sendPromise = new Promise((resolve) => {
-                // Use volatile emit for better performance (don't queue if socket is busy)
-                const sent = viewerSocket.volatile.emit("screenshot_binary", {
+              // Send binary frame directly (WebSocket native binary)
+              // Prepend metadata as JSON, then binary data
+              try {
+                const metadata = JSON.stringify({
+                  type: 'screenshot_binary',
                   tabId,
-                  image: compressedBuffer,
                   frameId: currentFrameId,
                   timestamp: now,
                   compressed: isCompressed
                 });
-
+                
+                // Create frame: [metadata length (4 bytes)][metadata][binary data]
+                const metadataBuffer = Buffer.from(metadata);
+                const metadataLength = Buffer.alloc(4);
+                metadataLength.writeUInt32BE(metadataBuffer.length, 0);
+                
+                const frame = Buffer.concat([
+                  metadataLength,
+                  metadataBuffer,
+                  compressedBuffer
+                ]);
+                
+                // Send binary frame (non-blocking)
+                const sent = sendBinary(viewerWS, frame);
+                
                 if (sent) {
-                  // Frame sent successfully, will be decremented when client acknowledges
-                  // For now, we'll use a timeout to decrement (client might not acknowledge)
+                  // Frame sent successfully
                   setTimeout(() => {
                     clientQueue.pendingFrames = Math.max(0, clientQueue.pendingFrames - 1);
-                    resolve();
                   }, minFrameInterval);
                 } else {
                   // Socket is busy, decrement immediately
                   clientQueue.pendingFrames = Math.max(0, clientQueue.pendingFrames - 1);
-                  resolve();
                 }
-              });
-
-              sendPromises.push(sendPromise);
+              } catch (error) {
+                // Error sending, decrement
+                clientQueue.pendingFrames = Math.max(0, clientQueue.pendingFrames - 1);
+              }
             });
 
-            // Wait for all sends to complete (non-blocking)
-            Promise.all(sendPromises).catch(() => {});
+            // Sends are fire-and-forget (no promises needed for WebSocket)
 
             // Log performance stats every 60 frames
             if (frameCount % 60 === 0) {

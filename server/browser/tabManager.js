@@ -1,11 +1,12 @@
 // Tab management operations
 
 import { startCDPScreencast, stopCDPScreencast } from './screencast.js';
+import { findWebSocketById, sendJSON, broadcastToTabViewers } from '../websocket/wsServer.js';
 
 /**
  * Open a new tab
  */
-export async function openTab(socket, url, browserInstance, io) {
+export async function openTab(socket, url, browserInstance, wss) {
   const page = await browserInstance.context.newPage();
   await page.goto(url || "https://google.com");
   const tabId = `tab_${++browserInstance.tabCounter}`;
@@ -16,17 +17,12 @@ export async function openTab(socket, url, browserInstance, io) {
   page.on("framenavigated", (frame) => {
     if (frame === page.mainFrame()) {
       const viewers = browserInstance.tabViewers[tabId] || new Set();
-      viewers.forEach(socketId => {
-        const viewerSocket = io.sockets.sockets.get(socketId);
-        if (viewerSocket) {
-          viewerSocket.emit("url_changed", { tabId, url: page.url() });
-        }
-      });
+      broadcastToTabViewers(viewers, "url_changed", { tabId, url: page.url() });
     }
   });
 
   // Start CDP screencast streaming
-  await startCDPScreencast(socket, tabId, browserInstance, io);
+  await startCDPScreencast(socket, tabId, browserInstance, wss);
 
   // Send immediate screenshot to the client that opened the tab
   setTimeout(async () => {
@@ -49,8 +45,12 @@ export async function openTab(socket, url, browserInstance, io) {
     }
   }, 100);
 
-  // Broadcast to all clients that a new tab was opened
-  io.emit("tab_opened", { tabId, url: page.url() });
+  // Broadcast to all clients that a new tab was opened (via wss.clients)
+  wss.clients.forEach((client) => {
+    if (client.readyState === 1) { // OPEN
+      sendJSON(client, "tab_opened", { tabId, url: page.url() });
+    }
+  });
 }
 
 /**
@@ -68,7 +68,7 @@ export function listTabs(browserInstance) {
 /**
  * Switch to a tab
  */
-export async function switchTab(socket, tabId, browserInstance, io) {
+export async function switchTab(socket, tabId, browserInstance, wss) {
   const page = browserInstance.pages[tabId];
   if (!page || page.isClosed()) return;
   
@@ -85,7 +85,7 @@ export async function switchTab(socket, tabId, browserInstance, io) {
   await page.bringToFront();
   
   // Start CDP screencast for the new tab (adds socket to viewers)
-  await startCDPScreencast(socket, tabId, browserInstance, io);
+  await startCDPScreencast(socket, tabId, browserInstance, wss);
   
   // Send immediate screenshot to this client
   setTimeout(async () => {
@@ -112,7 +112,7 @@ export async function switchTab(socket, tabId, browserInstance, io) {
 /**
  * Close a tab
  */
-export async function closeTab(tabId, browserInstance, socket, io) {
+export async function closeTab(tabId, browserInstance, socket, wss) {
   const page = browserInstance.pages[tabId];
   if (!page) return;
   
@@ -143,5 +143,9 @@ export async function closeTab(tabId, browserInstance, socket, io) {
   }
   
   // Broadcast to all clients that this tab was closed
-  io.emit("tab_closed", { tabId });
+  wss.clients.forEach((client) => {
+    if (client.readyState === 1) { // OPEN
+      sendJSON(client, "tab_closed", { tabId });
+    }
+  });
 }

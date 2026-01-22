@@ -1,7 +1,7 @@
 // Main component - clean and modular
 
 import { useState } from "react";
-import { useSocket } from "../hooks/useSocket.js";
+import { useWebSocket as useSocket } from "../hooks/useWebSocket.js";
 import { useBrowser } from "../hooks/useBrowser.js";
 import { useTabs } from "../hooks/useTabs.js";
 import { useScreenshot } from "../hooks/useScreenshot.js";
