@@ -44,11 +44,15 @@ export default function WebRTCTest() {
       addMessage(`Connection error: ${error.message}`, 'error')
     })
 
-    // WebRTC offer handler
-    newSocket.on('webrtc_offer', async ({ offer }) => {
-      console.log('[Test] Received WebRTC offer:', offer)
-      addMessage('Received WebRTC offer', 'info')
-      await handleWebRTCOffer(offer)
+    // WebRTC offer handler (handles both initial offers and ICE restart offers)
+    newSocket.on('webrtc_offer', async ({ offer, iceRestart }) => {
+      console.log('[Test] Received WebRTC offer:', { iceRestart, offer })
+      if (iceRestart) {
+        addMessage('Received ICE restart offer', 'info')
+      } else {
+        addMessage('Received WebRTC offer', 'info')
+      }
+      await handleWebRTCOffer(offer, iceRestart)
     })
 
     // ICE candidate handler
@@ -75,17 +79,42 @@ export default function WebRTCTest() {
     }
   }, [])
 
-  const handleWebRTCOffer = async (offer) => {
+  const handleWebRTCOffer = async (offer, isIceRestart = false) => {
     try {
-      // Get ICE servers (same as backend)
+      // If this is an ICE restart and we already have a connection, reuse it
+      if (isIceRestart && peerConnectionRef.current) {
+        const pc = peerConnectionRef.current
+        console.log('[Test] Processing ICE restart offer')
+        await pc.setRemoteDescription(new RTCSessionDescription(offer))
+        const answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        
+        if (socketRef.current) {
+          socketRef.current.emit('webrtc_answer', {
+            answer: pc.localDescription
+          })
+          addMessage('Sent ICE restart answer', 'info')
+        }
+        return
+      }
+      
+      // Otherwise, create a new connection (initial offer)
+      // Get ICE servers - multiple STUN servers for better connectivity
       const iceServers = [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
+        { urls: 'stun:stun.stunprotocol.org:3478' },
       ]
       
-      
-      // Create peer connection
-      const pc = new RTCPeerConnection({ iceServers })
+      // Create peer connection with optimized settings for STUN-only
+      const pc = new RTCPeerConnection({ 
+        iceServers,
+        iceCandidatePoolSize: 10, // Pre-gather more candidates
+        iceTransportPolicy: 'all' // Allow all candidate types
+      })
 
       peerConnectionRef.current = pc
 

@@ -15,7 +15,13 @@ export const useWebRTC = () => {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-          ]
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            { urls: 'stun:stun.stunprotocol.org:3478' },
+          ],
+          iceCandidatePoolSize: 10,
+          iceTransportPolicy: 'all'
         });
         peerConnectionsRef.current[tabId] = pc;
       } catch (error) {
@@ -216,12 +222,18 @@ export const useWebRTC = () => {
       // If PC doesn't exist yet, create it now (race condition fix)
       if (!pc) {
         console.log(`[WebRTC Client] Creating peer connection for tab ${tabId} (offer received before setup)`);
-        // Use STUN servers only for faster connections
+        // Use STUN servers only for faster connections - multiple servers for better connectivity
         pc = new RTCPeerConnection({
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-          ]
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            { urls: 'stun:stun.stunprotocol.org:3478' },
+          ],
+          iceCandidatePoolSize: 10,
+          iceTransportPolicy: 'all'
         });
 
         // Note: Data channel handlers will be set up by setupWebRTCForTab

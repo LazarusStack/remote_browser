@@ -5,27 +5,37 @@ import { getBrowserInstance } from '../browser/browserManager.js';
 // Store test WebRTC connections (socket.id -> { pc, dataChannel })
 const testWebRTCConnections = new Map();
 
-// Get ICE servers configuration from environment variables
+// Get ICE servers configuration - using multiple STUN servers for better connectivity
 function getIceServers() {
   const iceServers = [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    // Additional public STUN servers as fallback
+    { urls: 'stun:stun.stunprotocol.org:3478' },
+    { urls: 'stun:stun.voiparound.com' },
+    { urls: 'stun:stun.voipbuster.com' }
   ];
-
 
   return iceServers;
 }
 
 export function setupWebRTCHandlers(socket) {
   // WebRTC signaling handlers - client sends answer (handles both test and regular connections)
-  socket.on("webrtc_answer", async ({ tabId, answer }) => {
+  socket.on("webrtc_answer", async ({ tabId, answer, iceRestart }) => {
     // If no tabId, this is a test connection
     if (!tabId) {
       const testConn = testWebRTCConnections.get(socket.id);
       if (testConn && testConn.pc && answer) {
         try {
           await testConn.pc.setRemoteDescription(new RTCSessionDescription(answer));
-          console.log(`[WebRTC Test] Answer received and set for socket ${socket.id}`);
+          if (iceRestart) {
+            console.log(`[WebRTC Test] ICE restart answer received and set for socket ${socket.id}`);
+          } else {
+            console.log(`[WebRTC Test] Answer received and set for socket ${socket.id}`);
+          }
         } catch (error) {
           console.error(`[WebRTC Test] Error handling answer:`, error);
         }
@@ -138,9 +148,11 @@ export function setupWebRTCHandlers(socket) {
       let remoteCandidateCount = 0;
       const candidateTypes = { host: 0, srflx: 0, relay: 0, prflx: 0 };
       
-      // Create peer connection
+      // Create peer connection with optimized settings for STUN-only
       const pc = new RTCPeerConnection({
-        iceServers: getIceServers()
+        iceServers: getIceServers(),
+        iceCandidatePoolSize: 10, // Pre-gather more candidates for better connectivity
+        iceTransportPolicy: 'all' // Allow all candidate types (host, srflx, but not relay since we don't have TURN)
       });
 
       // Create data channel
@@ -277,10 +289,40 @@ export function setupWebRTCHandlers(socket) {
         });
         
         if (iceState === 'failed') {
+          // Attempt ICE restart for STUN-only connections (might help with timing issues)
+          if (testConn.iceRestartAttempted === undefined) {
+            testConn.iceRestartAttempted = false;
+          }
+          
+          if (!testConn.iceRestartAttempted && candidateTypes.srflx > 0) {
+            // STUN is working, try ICE restart once
+            console.log(`[WebRTC Test] Attempting ICE restart for socket ${socket.id}...`);
+            testConn.iceRestartAttempted = true;
+            
+            // Create new offer with ICE restart
+            pc.createOffer({ iceRestart: true })
+              .then(offer => {
+                return pc.setLocalDescription(offer);
+              })
+              .then(() => {
+                socket.emit('webrtc_offer', {
+                  offer: pc.localDescription,
+                  iceRestart: true
+                });
+                console.log(`[WebRTC Test] ICE restart offer sent for socket ${socket.id}`);
+              })
+              .catch(error => {
+                console.error(`[WebRTC Test] ICE restart failed for socket ${socket.id}:`, error);
+              });
+            
+            return; // Don't log error yet, wait for restart attempt
+          }
+          
           console.error(`[WebRTC Test] ❌ ICE connection failed for socket ${socket.id}. Possible causes:`, {
             networkIssue: 'Firewall/NAT blocking UDP traffic - AWS Security Group may not allow inbound UDP',
             stunIssue: candidateTypes.srflx === 0 ? 'STUN server not working - no srflx candidates' : 'STUN working (srflx candidates found)',
             natIssue: candidateTypes.host > 0 && candidateTypes.srflx > 0 ? 'Both host and srflx candidates found, but connection failed - likely symmetric NAT or firewall blocking' : 'Insufficient candidate types',
+            iceRestartAttempted: testConn.iceRestartAttempted || false,
             candidateCounts: {
               local: localCandidateCount,
               remote: testConn.remoteCandidateCount || 0,
@@ -288,7 +330,7 @@ export function setupWebRTCHandlers(socket) {
             },
             recommendation: candidateTypes.srflx === 0 
               ? 'CRITICAL: STUN not working - check outbound UDP to port 19302, verify STUN servers reachable'
-              : 'CRITICAL: Configure AWS Security Group to allow inbound UDP ports 10000-20000. Both sides may be behind symmetric NAT - direct connection may not be possible without TURN'
+              : 'CRITICAL: Configure AWS Security Group to allow inbound UDP ports 10000-20000. If both sides are behind symmetric NAT, direct connection may not be possible - but try Security Group first!'
           });
         } else if (iceState === 'connected' || iceState === 'completed') {
           console.log(`[WebRTC Test] ✅ ICE connection ${iceState} for socket ${socket.id}`);

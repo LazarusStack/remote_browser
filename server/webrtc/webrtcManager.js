@@ -19,7 +19,13 @@ export async function setupWebRTC(socket, tabId, browserInstance) {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
-        ]
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun4.l.google.com:19302' },
+          { urls: 'stun:stun.stunprotocol.org:3478' },
+        ],
+        iceCandidatePoolSize: 10, // Pre-gather more candidates for better connectivity
+        iceTransportPolicy: 'all' // Allow all candidate types (host, srflx, but not relay since we don't have TURN)
       });
 
       // Create data channel for screenshot data
