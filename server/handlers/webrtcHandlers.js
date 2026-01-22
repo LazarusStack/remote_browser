@@ -369,6 +369,9 @@ export function setupWebRTCHandlers(socket) {
           const hasHost = candidateTypes.host > 0;
           const hasBothCandidates = localCandidateCount > 0 && (testConn.remoteCandidateCount || 0) > 0;
           
+          const hasRelay = candidateTypes.relay > 0;
+          const turnUrl = process.env.TURN_URL || 'turn:13.126.43.172:3478';
+          
           console.error(`[WebRTC Test] ❌ Connection ${connState} for socket ${socket.id}. Final diagnostics:`, {
             iceConnectionState: iceState,
             iceGatheringState: gatheringState,
@@ -378,17 +381,27 @@ export function setupWebRTCHandlers(socket) {
               remote: testConn.remoteCandidateCount || 0,
               types: candidateTypes
             },
+            turnServer: {
+              configured: turnUrl,
+              relayCandidatesGenerated: hasRelay,
+              status: hasRelay ? 'WORKING' : 'NOT WORKING - No relay candidates generated'
+            },
             analysis: {
               stunWorking: hasSrflx,
+              turnWorking: hasRelay,
               hasLocalCandidates: hasHost,
               candidatesExchanged: hasBothCandidates,
-              likelyCause: !hasSrflx 
+              likelyCause: !hasRelay
+                ? 'TURN server not working - no relay candidates. Check: 1) TURN server reachable, 2) Security group allows port 3478, 3) TURN credentials correct, 4) TURN server running'
+                : !hasSrflx 
                 ? 'STUN server not reachable or blocked'
                 : !hasBothCandidates
                 ? 'ICE candidates not exchanged properly'
                 : 'AWS Security Group blocking inbound UDP OR symmetric NAT preventing direct connection'
             },
-            recommendation: !hasSrflx
+            recommendation: !hasRelay
+              ? 'CRITICAL: TURN server not generating relay candidates! Check: 1) Security group allows UDP/TCP port 3478 inbound, 2) TURN server is running (sudo systemctl status coturn), 3) TURN credentials match (turnuser:turnpassword), 4) Client can reach TURN server at 13.126.43.172:3478'
+              : !hasSrflx
               ? 'CRITICAL: Fix STUN - check outbound UDP to port 19302, verify firewall allows outbound UDP'
               : !hasBothCandidates
               ? 'CRITICAL: ICE candidates not exchanged - check WebSocket connection and signaling'
