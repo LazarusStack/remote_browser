@@ -12,21 +12,6 @@ function getIceServers() {
     { urls: 'stun:stun1.l.google.com:19302' }
   ];
 
-  // Add TURN server if configured
-  const turnUrl = process.env.TURN_URL || 'turn:13.232.240.127:3478';
-  const turnUsername = process.env.TURN_USERNAME || 'turnuser';
-  const turnCredential = process.env.TURN_CREDENTIAL || 'turnpassword';
-
-  if (turnUrl && turnUsername && turnCredential) {
-    iceServers.push({
-      urls: turnUrl,
-      username: turnUsername,
-      credential: turnCredential
-    });
-    console.log('[WebRTC] TURN server configured:', turnUrl);
-  } else {
-    console.warn('[WebRTC] No TURN server configured - connections may fail in production. Set TURN_URL, TURN_USERNAME, and TURN_CREDENTIAL environment variables.');
-  }
 
   return iceServers;
 }

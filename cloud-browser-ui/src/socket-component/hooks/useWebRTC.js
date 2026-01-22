@@ -10,21 +10,11 @@ export const useWebRTC = () => {
     // If PC doesn't exist, create it
     if (!pc) {
       try {
-        // Use STUN and TURN servers for better connectivity
-        // TURN server is needed when direct connection fails (NAT/firewall issues)
-        const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:13.232.240.127:3478';
-        const turnUsername = import.meta.env.VITE_TURN_USERNAME || 'turnuser';
-        const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || 'turnpassword';
         
         pc = new RTCPeerConnection({
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            {
-              urls: turnUrl,
-              username: turnUsername,
-              credential: turnCredential
-            }
           ]
         });
         peerConnectionsRef.current[tabId] = pc;

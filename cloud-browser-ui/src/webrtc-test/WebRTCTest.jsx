@@ -82,17 +82,6 @@ export default function WebRTCTest() {
         { urls: 'stun:stun1.l.google.com:19302' }
       ]
       
-      // Add TURN server (use environment variable or default)
-      const turnUrl = import.meta.env.VITE_TURN_URL || 'turn:13.232.240.127:3478'
-      const turnUsername = import.meta.env.VITE_TURN_USERNAME || 'turnuser'
-      const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || 'turnpassword'
-      
-      iceServers.push({
-        urls: turnUrl,
-        username: turnUsername,
-        credential: turnCredential
-      })
-      addMessage('TURN server configured', 'info')
       
       // Create peer connection
       const pc = new RTCPeerConnection({ iceServers })
