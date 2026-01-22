@@ -252,15 +252,14 @@ export function setupWebRTCHandlers(socket) {
         
         if (iceState === 'failed') {
           console.error(`[WebRTC Test] ❌ ICE connection failed for socket ${socket.id}. Possible causes:`, {
-            noRelayCandidates: candidateTypes.relay === 0 ? 'No TURN server configured - add TURN_URL, TURN_USERNAME, TURN_CREDENTIAL' : 'TURN server configured',
+            networkIssue: 'Firewall/NAT blocking UDP traffic',
+            stunIssue: 'STUN server unreachable or blocked',
             candidateCounts: {
               local: localCandidateCount,
               remote: testConn.remoteCandidateCount || 0,
               types: candidateTypes
             },
-            recommendation: candidateTypes.relay === 0 
-              ? 'Add TURN server for production environments (NAT/firewall traversal)'
-              : 'Check TURN server connectivity and credentials'
+            recommendation: 'Check firewall rules allow UDP traffic, verify STUN servers are reachable, ensure AWS Security Group allows inbound UDP (ports 10000-20000)'
           });
         } else if (iceState === 'connected' || iceState === 'completed') {
           console.log(`[WebRTC Test] ✅ ICE connection ${iceState} for socket ${socket.id}`);
@@ -291,10 +290,7 @@ export function setupWebRTCHandlers(socket) {
               remote: testConn.remoteCandidateCount || 0,
               types: candidateTypes
             },
-            hasTURN: candidateTypes.relay > 0,
-            recommendation: candidateTypes.relay === 0 
-              ? 'CRITICAL: Add TURN server (TURN_URL, TURN_USERNAME, TURN_CREDENTIAL) for production'
-              : 'Check network connectivity and TURN server status'
+            recommendation: 'Check firewall rules (AWS Security Group should allow inbound UDP ports 10000-20000), verify STUN servers are reachable, check network connectivity'
           });
           testWebRTCConnections.delete(socket.id);
         } else if (connState === 'connected') {

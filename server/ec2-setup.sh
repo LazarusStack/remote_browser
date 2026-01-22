@@ -68,7 +68,14 @@ fi
 echo "🔥 Configuring firewall..."
 sudo ufw allow 22/tcp
 sudo ufw allow 3000/tcp
+# Note: WebRTC uses STUN servers (outbound UDP to port 19302) and dynamic UDP ports for peer connections
+# Outbound UDP is typically allowed by default
+# For inbound WebRTC connections, ensure AWS Security Group allows UDP traffic (ports 10000-20000 recommended)
 sudo ufw --force enable
+
+echo "⚠️  IMPORTANT: Configure AWS Security Group to allow:"
+echo "   - Inbound UDP: ports 10000-20000 (for WebRTC peer connections)"
+echo "   - Outbound UDP: port 19302 (for STUN server access)"
 
 echo "✅ System setup complete!"
 echo ""
