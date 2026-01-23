@@ -35,7 +35,7 @@ export default function Viewport({
         }}
       >
         {isLoading && !screenshot ? (
-          <div className="w-[1920px] h-[1080px] flex items-center justify-center bg-gray-100">
+          <div className="w-[1280px] h-[720px] flex items-center justify-center bg-gray-100">
             <div className="text-gray-500">Loading...</div>
           </div>
         ) : screenshot ? (
@@ -46,7 +46,7 @@ export default function Viewport({
             draggable={false}
           />
         ) : (
-          <div className="w-[1920px] h-[1080px] flex items-center justify-center bg-gray-100">
+          <div className="w-[1280px] h-[720px] flex items-center justify-center bg-gray-100">
             <div className="text-gray-500">No screenshot available</div>
           </div>
         )}

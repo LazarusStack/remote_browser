@@ -21,14 +21,39 @@ export const config = {
       '--disable-ipc-flooding-protection',
       '--enable-features=NetworkService,NetworkServiceInProcess',
       '--disable-features=TranslateUI',
-      '--disable-ipc-flooding-protection'
+      // Additional flags for better screencast performance
+      '--disable-web-security',
+      '--disable-features=IsolateOrigins,site-per-process',
+      '--disable-site-isolation-trials',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-component-extensions-with-background-pages',
+      '--disable-default-apps',
+      '--disable-sync',
+      '--metrics-recording-only',
+      '--mute-audio',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-infobars',
+      '--disable-notifications',
+      '--disable-popup-blocking',
+      '--disable-prompt-on-repost',
+      '--disable-translate',
+      '--disable-hang-monitor',
+      '--disable-client-side-phishing-detection',
+      '--disable-component-update',
+      '--disable-domain-reliability',
+      '--disable-features=AudioServiceOutOfProcess',
+      '--disable-features=RendererCodeIntegrity',
+      '--force-color-profile=srgb',
+      '--memory-pressure-off',
+      '--max_old_space_size=4096'
     ]
   },
   screencast: {
     format: 'jpeg', // JPEG is more widely supported than WebP in CDP
-    quality: 20, // Very low quality = fastest encoding (needed for 30+ FPS at 1080p)
-    maxWidth: 1920, // Keep 1080p for cursor coordinate accuracy
-    maxHeight: 1080,
+    quality: 30, // Balanced quality for 720p (slightly higher than 1080p since encoding is faster)
+    maxWidth: 1280, // Reduced from 1920 for faster CDP encoding (720p)
+    maxHeight: 720, // Reduced from 1080 for faster CDP encoding (720p)
     everyNthFrame: 1, // Send every frame from CDP
     minFrameInterval: 16 // ~60 FPS max (16ms = 60fps) - CDP encoding is the real bottleneck
   }

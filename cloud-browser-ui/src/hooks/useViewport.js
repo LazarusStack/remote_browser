@@ -68,22 +68,34 @@ export function useViewport(socketRef, activeTab, offsetX, offsetY, screenshot) 
     
     const rect = viewportRef.current.getBoundingClientRect();
     const scale = scaleRef.current;
-    const viewportWidth = 1920;
-    const viewportHeight = 1080;
-    const scaledWidth = viewportWidth * scale;
-    const scaledHeight = viewportHeight * scale;
+    // Screencast frame dimensions (what user sees)
+    const screencastWidth = 1280;
+    const screencastHeight = 720;
+    // Browser viewport dimensions (what browser expects)
+    const browserWidth = 1920;
+    const browserHeight = 1080;
+    // Scale factor from screencast to browser
+    const widthScale = browserWidth / screencastWidth; // 1.5
+    const heightScale = browserHeight / screencastHeight; // 1.5
     
-    // Calculate position relative to the viewport's top-left corner (before scaling)
+    const scaledWidth = screencastWidth * scale;
+    const scaledHeight = screencastHeight * scale;
+    
+    // Calculate position relative to the screencast frame (before scaling)
     let x = (e.clientX - rect.left - (rect.width - scaledWidth) / 2) / scale;
     let y = (e.clientY - rect.top - (rect.height - scaledHeight) / 2) / scale;
+    
+    // Scale from screencast coordinates to browser coordinates
+    x = x * widthScale;
+    y = y * heightScale;
     
     // Apply offsets
     x += offsetX;
     y += offsetY;
     
-    // Clamp to viewport bounds
-    const clampedX = Math.max(0, Math.min(viewportWidth, Math.round(x)));
-    const clampedY = Math.max(0, Math.min(viewportHeight, Math.round(y)));
+    // Clamp to browser viewport bounds
+    const clampedX = Math.max(0, Math.min(browserWidth, Math.round(x)));
+    const clampedY = Math.max(0, Math.min(browserHeight, Math.round(y)));
     
     return { x: clampedX, y: clampedY };
   };
