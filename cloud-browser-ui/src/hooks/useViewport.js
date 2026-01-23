@@ -47,7 +47,7 @@ export function useViewport(socketRef, activeTab, offsetX, offsetY, screenshot) 
     const wheelHandler = (e) => {
       if (!activeTab || !socketRef.current) return;
       e.preventDefault();
-      
+
       socketRef.current.emit("scroll", {
         tabId: activeTab,
         deltaX: e.deltaX,
@@ -65,47 +65,47 @@ export function useViewport(socketRef, activeTab, offsetX, offsetY, screenshot) 
 
   const calculateCoordinates = (e) => {
     if (!viewportRef.current) return null;
-    
+
     const rect = viewportRef.current.getBoundingClientRect();
     const scale = scaleRef.current;
     // Screencast frame dimensions (what user sees)
     const screencastWidth = 1280;
     const screencastHeight = 720;
     // Browser viewport dimensions (what browser expects)
-    const browserWidth = 1920;
-    const browserHeight = 1080;
+    const browserWidth = 1280;
+    const browserHeight = 720;
     // Scale factor from screencast to browser
-    const widthScale = browserWidth / screencastWidth; // 1.5
-    const heightScale = browserHeight / screencastHeight; // 1.5
-    
+    const widthScale = browserWidth / screencastWidth; // 1.0
+    const heightScale = browserHeight / screencastHeight; // 1.0
+
     const scaledWidth = screencastWidth * scale;
     const scaledHeight = screencastHeight * scale;
-    
+
     // Calculate position relative to the screencast frame (before scaling)
     let x = (e.clientX - rect.left - (rect.width - scaledWidth) / 2) / scale;
     let y = (e.clientY - rect.top - (rect.height - scaledHeight) / 2) / scale;
-    
+
     // Scale from screencast coordinates to browser coordinates
     x = x * widthScale;
     y = y * heightScale;
-    
+
     // Apply offsets
     x += offsetX;
     y += offsetY;
-    
+
     // Clamp to browser viewport bounds
     const clampedX = Math.max(0, Math.min(browserWidth, Math.round(x)));
     const clampedY = Math.max(0, Math.min(browserHeight, Math.round(y)));
-    
+
     return { x: clampedX, y: clampedY };
   };
 
   const handleClick = (e) => {
     if (!activeTab || !socketRef.current) return;
-    
+
     const coords = calculateCoordinates(e);
     if (!coords) return;
-    
+
     socketRef.current.emit("mouse_click", {
       tabId: activeTab,
       x: coords.x,
@@ -116,10 +116,10 @@ export function useViewport(socketRef, activeTab, offsetX, offsetY, screenshot) 
 
   const handleMouseMove = (e) => {
     if (!activeTab || !socketRef.current) return;
-    
+
     const coords = calculateCoordinates(e);
     if (!coords) return;
-    
+
     socketRef.current.emit("mouse_move", {
       tabId: activeTab,
       x: coords.x,
@@ -129,7 +129,7 @@ export function useViewport(socketRef, activeTab, offsetX, offsetY, screenshot) 
 
   const handleKeyDown = (e) => {
     if (!activeTab || !socketRef.current) return;
-    
+
     // Handle special keys
     const specialKeys = {
       "Enter": "Enter",

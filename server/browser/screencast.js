@@ -30,8 +30,14 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
   }
 
   // Track by clientId if available, otherwise by socketId
-  const connInfo = getConnectionInfo(socket);
-  const viewerId = connInfo.clientId || socket.id;
+  let realSocket = socket;
+  if (socket.id && !socket.send) {
+    const found = findWebSocketById(socket.id);
+    if (found) realSocket = found;
+  }
+
+  const connInfo = getConnectionInfo(realSocket);
+  const viewerId = connInfo?.clientId || socket.id;
   browserInstance.tabViewers[tabId].add(viewerId);
 
   // Initialize client frame tracking
