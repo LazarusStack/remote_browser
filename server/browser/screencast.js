@@ -72,6 +72,13 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
       let lastCDPFrameTime = Date.now();
       let cdpFrameIntervals = [];
       
+      // Adaptive frame skipping for video content
+      let recentFrameSizes = []; // Track last 10 frame sizes
+      let frameSkipCounter = 0; // Skip every Nth frame when video detected
+      let isVideoMode = false; // Detected video playback
+      const VIDEO_DETECTION_THRESHOLD = 50 * 1024; // 50KB - frames larger than this suggest video
+      const MAX_FRAME_SIZES_TO_TRACK = 10;
+      
       // Latency tracking
       let latencyStats = {
         total: 0,
@@ -104,7 +111,34 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
         }
         lastFrameSignature = frameSignature;
 
+        // Quick size check before processing (estimate from base64 length)
+        const estimatedSize = (data.length * 3) / 4; // Base64 to binary estimate
+        
+        // Update frame size tracking for video detection
+        recentFrameSizes.push(estimatedSize);
+        if (recentFrameSizes.length > MAX_FRAME_SIZES_TO_TRACK) {
+          recentFrameSizes.shift();
+        }
+        
+        // Detect video mode: if average of recent frames is large, we're likely showing video
+        const avgFrameSize = recentFrameSizes.reduce((a, b) => a + b, 0) / recentFrameSizes.length;
+        isVideoMode = avgFrameSize > VIDEO_DETECTION_THRESHOLD;
+        
+        // Adaptive frame skipping for video: skip every 3rd frame when video detected
+        // This maintains smoother playback while reducing load
+        if (isVideoMode) {
+          frameSkipCounter++;
+          // Skip every 3rd frame (process 2 out of 3 frames) to reduce load while maintaining smoothness
+          if (frameSkipCounter % 3 === 0) {
+            skippedFrames++;
+            return; // Skip this frame
+          }
+        } else {
+          frameSkipCounter = 0; // Reset counter when not in video mode
+        }
+
         // If we're still processing the last frame, drop this one (UDP-like behavior)
+        // Be more aggressive with dropping when in video mode
         if (frameProcessing) {
           skippedFrames++;
           return;
@@ -156,8 +190,10 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
               const clientQueue = clientFrameQueues.get(connectionId);
               if (!clientQueue) return;
 
-              // Skip if client has too many pending frames (backpressure)
-              if (clientQueue.pendingFrames > 2) {
+              // Adaptive backpressure: be more aggressive when frames are large (video)
+              const backpressureThreshold = isVideoMode ? 1 : 2; // Lower threshold for video
+              if (clientQueue.pendingFrames > backpressureThreshold) {
+                skippedFrames++;
                 return; // Client is slow, skip this frame
               }
 
@@ -202,9 +238,11 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
                 
                 if (sent) {
                   // Frame sent successfully
+                  // Adjust timeout based on video mode: faster for video to keep up
+                  const timeout = isVideoMode ? 8 : 16; // 8ms for video (125 FPS max), 16ms for static (60 FPS max)
                   setTimeout(() => {
                     clientQueue.pendingFrames = Math.max(0, clientQueue.pendingFrames - 1);
-                  }, 16); // Fixed 16ms timeout (no longer using minFrameInterval)
+                  }, timeout);
                 } else {
                   // Socket is busy, decrement immediately
                   clientQueue.pendingFrames = Math.max(0, clientQueue.pendingFrames - 1);
@@ -237,9 +275,10 @@ export async function startCDPScreencast(socket, tabId, browserInstance, wss) {
                 : 0;
               const cdpFPS = avgCDPInterval > 0 ? Math.round(1000 / avgCDPInterval) : 0;
               
+              const videoModeStr = isVideoMode ? ' [VIDEO]' : '';
               console.log(
                 `Tab ${tabId}: ${frameCount} frames (${fps} FPS), ${skippedFrames} dropped, ${duplicateFrames} duplicates, ` +
-                `~${sizeKB}KB/frame, ${activeViewers} viewers | ` +
+                `~${sizeKB}KB/frame, ${activeViewers} viewers${videoModeStr} | ` +
                 `Latency: avg=${avgLatency}ms, min=${minLatency}ms, max=${maxLatency}ms | ` +
                 `CDP: ${cdpFPS} FPS (${avgCDPInterval}ms interval)`
               );
