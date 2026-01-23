@@ -27,6 +27,13 @@ function generateConnectionId() {
   return `ws_${++connectionCounter}_${Date.now()}`;
 }
 
+// Client socket grouping (clientId -> Set<ws>)
+const clientSockets = new Map();
+
+export function getClientSockets(clientId) {
+  return clientSockets.get(clientId) || new Set();
+}
+
 /**
  * Send JSON message to WebSocket client
  */
@@ -116,8 +123,8 @@ function createWSAdapter(ws, connectionId) {
     emit: (event, data) => {
       sendJSON(ws, event, data);
     },
-    on: () => {}, // Not needed for handlers
-    off: () => {}, // Not needed for handlers
+    on: () => { }, // Not needed for handlers
+    off: () => { }, // Not needed for handlers
     connected: ws.readyState === 1
   };
 }
@@ -126,7 +133,7 @@ function createWSAdapter(ws, connectionId) {
  * Initialize WebSocket server
  */
 export function initWebSocketServer(server, config, browserInstances, socketBrowserMap) {
-  const wss = new WebSocketServer({ 
+  const wss = new WebSocketServer({
     server,
     perMessageDeflate: {
       zlibDeflateOptions: {
@@ -142,11 +149,25 @@ export function initWebSocketServer(server, config, browserInstances, socketBrow
   });
 
   wss.on('connection', (ws, req) => {
+    // Extract clientId from query params
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const clientId = url.searchParams.get('clientId');
+
+    // If no clientId provided, treat as legacy single connection (generate temp ID)
+    const effectiveClientId = clientId || `legacy_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
     const connectionId = generateConnectionId();
     const wsAdapter = createWSAdapter(ws, connectionId);
-    
+
+    // Add to client grouping
+    if (!clientSockets.has(effectiveClientId)) {
+      clientSockets.set(effectiveClientId, new Set());
+    }
+    clientSockets.get(effectiveClientId).add(ws);
+
     wsConnections.set(ws, {
       id: connectionId,
+      clientId: effectiveClientId,
       browserId: null,
       connected: true,
       adapter: wsAdapter
@@ -169,7 +190,7 @@ export function initWebSocketServer(server, config, browserInstances, socketBrow
         // Parse JSON message
         const { type, data } = JSON.parse(message.toString());
         const conn = wsConnections.get(ws);
-        
+
         if (!conn) {
           sendJSON(ws, 'error', { message: 'Connection not initialized' });
           return;
@@ -180,47 +201,47 @@ export function initWebSocketServer(server, config, browserInstances, socketBrow
           case 'connect_browser':
             await handleConnectBrowser(wsAdapter, data, socketBrowserMap, browserInstances);
             break;
-          
+
           case 'open_tab':
             await handleOpenTab(wsAdapter, data, socketBrowserMap, browserInstances, wss);
             break;
-          
+
           case 'list_tabs':
             handleListTabs(wsAdapter, socketBrowserMap, browserInstances);
             break;
-          
+
           case 'switch_tab':
             await handleSwitchTab(wsAdapter, data, socketBrowserMap, browserInstances, wss);
             break;
-          
+
           case 'close_tab':
             await handleCloseTab(wsAdapter, data, socketBrowserMap, browserInstances, wss);
             break;
-          
+
           case 'mouse_click':
             await handleMouseClick(wsAdapter, data, socketBrowserMap, browserInstances);
             break;
-          
+
           case 'mouse_move':
             await handleMouseMove(wsAdapter, data, socketBrowserMap, browserInstances);
             break;
-          
+
           case 'keyboard_input':
             await handleKeyboardInput(wsAdapter, data, socketBrowserMap, browserInstances);
             break;
-          
+
           case 'scroll':
             await handleScroll(wsAdapter, data, socketBrowserMap, browserInstances);
             break;
-          
+
           case 'navigate':
             await handleNavigate(wsAdapter, data, socketBrowserMap, browserInstances);
             break;
-          
+
           case 'set_cookies':
             await handleSetCookies(wsAdapter, data, socketBrowserMap, browserInstances);
             break;
-          
+
           default:
             sendJSON(ws, 'error', { message: `Unknown message type: ${type}` });
         }
@@ -236,6 +257,15 @@ export function initWebSocketServer(server, config, browserInstances, socketBrow
       if (conn) {
         console.log("WebSocket client disconnected", conn.id);
         await handleDisconnect(wsAdapter, socketBrowserMap, browserInstances);
+        // Remove from client grouping
+        if (conn.clientId && clientSockets.has(conn.clientId)) {
+          const sockets = clientSockets.get(conn.clientId);
+          sockets.delete(ws);
+          if (sockets.size === 0) {
+            clientSockets.delete(conn.clientId);
+          }
+        }
+
         delete socketBrowserMap[conn.id];
         wsConnections.delete(ws);
       }

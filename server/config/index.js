@@ -5,7 +5,7 @@ export const config = {
     ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
     : ["*"],
   browser: {
-    viewport: { width: 1920, height: 1080 },
+    viewport: { width: 1280, height: 720 },
     args: [
       '--disable-gpu',
       '--disable-dev-shm-usage',
